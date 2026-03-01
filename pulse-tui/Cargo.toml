@@ -1,0 +1,7 @@
+[package]
+name = "pulse-tui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pulse-core = { path = "../pulse-core" }
