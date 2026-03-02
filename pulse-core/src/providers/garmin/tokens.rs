@@ -37,9 +37,24 @@ pub struct OAuth2Token {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: i64,
+    #[serde(default)]
     pub expires_at: i64,
     pub refresh_token_expires_in: i64,
+    #[serde(default)]
     pub refresh_token_expires_at: i64,
+}
+
+impl OAuth2Token {
+    /// Compute expires_at from expires_in if not set
+    pub fn compute_expirations(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        if self.expires_at == 0 {
+            self.expires_at = now + self.expires_in;
+        }
+        if self.refresh_token_expires_at == 0 {
+            self.refresh_token_expires_at = now + self.refresh_token_expires_in;
+        }
+    }
 }
 
 impl OAuth2Token {

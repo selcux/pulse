@@ -24,6 +24,7 @@ impl GarminProvider {
         Self {
             client: reqwest::blocking::ClientBuilder::new()
                 .cookie_store(true)
+                .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .expect("Failed to build HTTP client"),
         }

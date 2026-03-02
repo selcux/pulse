@@ -16,6 +16,7 @@ use super::tokens::{
 type HmacSha1 = Hmac<Sha1>;
 
 const SSO_BASE: &str = "https://sso.garmin.com/sso";
+const USER_AGENT: &str = "GCM-iOS-5.19.1.2";
 const CONNECT_API: &str = "https://connectapi.garmin.com";
 const CONSUMER_URL: &str = "https://thegarth.s3.amazonaws.com/oauth_consumer.json";
 
@@ -40,18 +41,44 @@ pub fn login(
     let consumer = fetch_consumer(client)?;
 
     // Step 2: Establish SSO cookies
-    let embed_url = format!("{SSO_BASE}/embed?id=gauth-widget&embedWidget=true&gauthHost={SSO_BASE}");
-    client.get(&embed_url).send().context("Failed to load SSO embed page")?;
+    let sso_base = SSO_BASE;
+    #[allow(unused_variables)]
+    let embed_params = [
+        ("id", "gauth-widget"),
+        ("embedWidget", "true"),
+        ("gauthHost", sso_base),
+    ];
+    let embed_url = format!("{SSO_BASE}/embed");
+    let embed_resp = client
+        .get(&embed_url)
+        .header("User-Agent", USER_AGENT)
+        .query(&embed_params)
+        .send()
+        .context("Failed to load SSO embed page")?;
+    let embed_final_url = embed_resp.url().to_string();
 
     // Step 3: Load sign-in page and extract CSRF token
-    let signin_url = format!(
-        "{SSO_BASE}/signin?id=gauth-widget&embedWidget=true&gauthHost={SSO_BASE}"
-    );
-    let signin_page = client
+    // Garmin requires specific params for the signin flow
+    let sso_embed = format!("{SSO_BASE}/embed");
+    let signin_params = [
+        ("id", "gauth-widget"),
+        ("embedWidget", "true"),
+        ("gauthHost", &sso_embed[..]),
+        ("service", &sso_embed[..]),
+        ("source", &sso_embed[..]),
+        ("redirectAfterAccountLoginUrl", &sso_embed[..]),
+        ("redirectAfterAccountCreationUrl", &sso_embed[..]),
+    ];
+    let signin_url = format!("{SSO_BASE}/signin");
+    let signin_resp = client
         .get(&signin_url)
+        .header("User-Agent", USER_AGENT)
+        .header("Referer", &embed_final_url)
+        .query(&signin_params)
         .send()
-        .context("Failed to load SSO sign-in page")?
-        .text()?;
+        .context("Failed to load SSO sign-in page")?;
+    let signin_final_url = signin_resp.url().to_string();
+    let signin_page = signin_resp.text()?;
 
     let csrf = extract_csrf(&signin_page)?;
 
@@ -64,23 +91,42 @@ pub fn login(
     ];
     let post_resp = client
         .post(&signin_url)
+        .header("User-Agent", USER_AGENT)
+        .header("Referer", &signin_final_url)
+        .query(&signin_params)
         .form(&form)
         .send()
         .context("Failed to POST sign-in form")?
         .text()?;
 
-    // Step 5: Check response — MFA or success?
-    if looks_like_mfa(&post_resp) {
+    // Step 5: Check response title to determine next step
+    let title = extract_title(&post_resp).unwrap_or_default();
+    
+    if title == "Success" {
+        // Login successful, extract ticket and complete
+        let ticket = extract_ticket(&post_resp)
+            .context("Login succeeded but couldn't extract ticket")?;
+        finish_login(client, &consumer, &ticket)
+    } else if title.contains("MFA") {
+        // MFA required
         if let Some(code) = mfa_code {
-            let mfa_resp = submit_mfa(client, &post_resp, code)?;
-            let ticket = extract_ticket(&mfa_resp)?;
-            return finish_login(client, &consumer, &ticket);
+            let mfa_resp = submit_mfa(client, &signin_params, code, &post_resp, &signin_final_url)?;
+            let ticket = extract_ticket(&mfa_resp)
+                .context("MFA code rejected or expired")?;
+            finish_login(client, &consumer, &ticket)
+        } else {
+            Ok(LoginResult::MfaRequired)
         }
-        return Ok(LoginResult::MfaRequired);
+    } else {
+        // Debug: Show what we got in the response
+        eprintln!("DEBUG: Unexpected title: {}", title);
+        eprintln!("DEBUG: Response preview (first 2000 chars):");
+        eprintln!(
+            "{}",
+            &post_resp.chars().take(2000).collect::<String>()
+        );
+        bail!("Login failed. Check your email and password.")
     }
-
-    let ticket = extract_ticket(&post_resp)?;
-    finish_login(client, &consumer, &ticket)
 }
 
 /// Ensure we have a valid OAuth2 access token. Auto-refreshes if expired.
@@ -113,25 +159,20 @@ fn fetch_consumer(client: &reqwest::blocking::Client) -> Result<OAuthConsumer> {
         .context("Failed to parse OAuth consumer JSON")
 }
 
-/// Detect Garmin's MFA challenge page. Checks multiple indicators since
-/// Garmin's exact HTML varies and isn't documented.
-fn looks_like_mfa(html: &str) -> bool {
-    let html_lower = html.to_lowercase();
-    html_lower.contains("verificationcode")          // form field name
-        || html_lower.contains("mfa")
-        || html_lower.contains("two-factor")
-        || html_lower.contains("two factor")
-        || html_lower.contains("verification code")
-        || html_lower.contains("enter the code")
-        || html_lower.contains("authenticator")
-        || html_lower.contains("one-time")
-}
 
 fn extract_csrf(html: &str) -> Result<String> {
     let re = Regex::new(r#"name="_csrf"\s+value="([^"]+)""#)?;
     let caps = re
         .captures(html)
         .context("Could not find CSRF token in sign-in page")?;
+    Ok(caps[1].to_string())
+}
+
+fn extract_title(html: &str) -> Result<String> {
+    let re = Regex::new(r#"<title>(.+?)</title>"#)?;
+    let caps = re
+        .captures(html)
+        .context("Could not find title in response")?;
     Ok(caps[1].to_string())
 }
 
@@ -145,16 +186,24 @@ fn extract_ticket(html: &str) -> Result<String> {
 
 fn submit_mfa(
     client: &reqwest::blocking::Client,
-    mfa_page: &str,
+    signin_params: &[(&str, &str)],
     code: &str,
+    mfa_page: &str,
+    referer: &str,
 ) -> Result<String> {
     let csrf = extract_csrf(mfa_page)?;
-    let mfa_url = format!(
-        "{SSO_BASE}/verifyMFA/loginEnterMfa?id=gauth-widget&embedWidget=true&gauthHost={SSO_BASE}"
-    );
-    let form = [("verificationCode", code), ("embed", "true"), ("_csrf", &csrf)];
+    let mfa_url = format!("{SSO_BASE}/verifyMFA/loginEnterMfaCode");
+    let form = [
+        ("mfa-code", code),
+        ("embed", "true"),
+        ("_csrf", &csrf),
+        ("fromPage", "setupEnterMfaCode"),
+    ];
     let resp = client
         .post(&mfa_url)
+        .header("User-Agent", USER_AGENT)
+        .header("Referer", referer)
+        .query(signin_params)
         .form(&form)
         .send()
         .context("Failed to submit MFA code")?
