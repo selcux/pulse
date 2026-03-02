@@ -99,7 +99,7 @@ impl GarminProvider {
             date: date.to_string(),
             steps: summary.total_steps,
             active_minutes,
-            floors: summary.floors_ascended,
+            floors: summary.floors_ascended.map(|f| f as i32),
             source: "garmin".into(),
         }
     }

@@ -56,18 +56,40 @@ pub struct HrvSummary {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GarminDailySummaryResponse {
+    // Heart rate fields - may not be in this endpoint
+    #[serde(default)]
     pub resting_heart_rate: Option<i32>,
+    #[serde(default)]
     pub max_heart_rate: Option<i32>,
+    #[serde(default)]
     pub min_heart_rate: Option<i32>,
+    // Activity fields
     pub total_steps: Option<i32>,
+    #[serde(default)]
     pub highly_active_seconds: Option<i64>,
+    #[serde(default)]
     pub active_seconds: Option<i64>,
-    pub floors_ascended: Option<i32>,
+    #[serde(default)]
+    pub floors_ascended: Option<f64>,
+    // Stress fields - may not be in this endpoint
+    #[serde(default)]
     pub average_stress_level: Option<i32>,
+    #[serde(default)]
     pub max_stress_level: Option<i32>,
+    // Body battery fields - may not be in this endpoint
+    #[serde(default)]
     pub body_battery_highest_value: Option<i32>,
+    #[serde(default)]
     pub body_battery_lowest_value: Option<i32>,
-    // Note: body_battery_charged/drained not in this endpoint
+    // Additional fields from actual API response
+    #[serde(default)]
+    pub total_kilocalories: Option<f64>,
+    #[serde(default)]
+    pub active_kilocalories: Option<f64>,
+    #[serde(default)]
+    pub bmr_kilocalories: Option<f64>,
+    #[serde(default)]
+    pub total_distance_meters: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +142,8 @@ impl<'a> GarminApi<'a> {
             bail!("Garmin {label} API returned {status}: {body}");
         }
 
-        resp.json::<T>()
+        let body_text = resp.text().unwrap_or_default();
+        serde_json::from_str::<T>(&body_text)
             .with_context(|| format!("Failed to parse {label} response"))
     }
 }

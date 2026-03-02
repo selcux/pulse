@@ -1,0 +1,2 @@
+[console_scripts]
+garth = garth.cli:main
