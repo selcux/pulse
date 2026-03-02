@@ -5,8 +5,7 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-/// Placeholder for the database type (implemented in Task 2).
-pub struct Database;
+use crate::db::Database;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MetricType {
