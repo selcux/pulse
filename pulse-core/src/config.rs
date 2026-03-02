@@ -13,6 +13,12 @@ pub struct UserConfig {
     pub age: Option<i32>,
     pub sleep_target_hours: Option<f64>,
     pub steps_target: Option<i32>,
+    // TODO: Remove rhr_baseline and hrv_baseline once Garmin sync is live —
+    // auto-compute from 30-day DB averages only, no manual config needed.
+    pub rhr_baseline: Option<f64>,
+    pub hrv_baseline: Option<f64>,
+    pub vo2_max: Option<f64>,
+    pub lean_body_mass_kg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +53,10 @@ pub fn default_config() -> PulseConfig {
             age: None,
             sleep_target_hours: Some(8.0),
             steps_target: Some(10_000),
+            rhr_baseline: None,
+            hrv_baseline: None,
+            vo2_max: None,
+            lean_body_mass_kg: None,
         },
         providers: ProvidersConfig {
             garmin: Some(GarminConfig { enabled: false }),

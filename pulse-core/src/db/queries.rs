@@ -106,6 +106,28 @@ pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
 }
 
 // ---------------------------------------------------------------------------
+// Heart baselines (30-day averages)
+// ---------------------------------------------------------------------------
+
+pub struct HeartBaselines {
+    pub rhr_avg: Option<f64>,
+    pub hrv_avg: Option<f64>,
+}
+
+pub fn compute_heart_baselines(db: &Database) -> Result<HeartBaselines> {
+    let mut stmt = db.conn().prepare(
+        "SELECT AVG(resting_hr), AVG(hrv_avg) FROM heart WHERE date >= date('now', '-30 days')",
+    )?;
+    let result = stmt.query_row([], |row| {
+        Ok(HeartBaselines {
+            rhr_avg: row.get(0)?,
+            hrv_avg: row.get(1)?,
+        })
+    })?;
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
 // Recovery
 // ---------------------------------------------------------------------------
 

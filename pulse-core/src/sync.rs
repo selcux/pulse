@@ -103,6 +103,10 @@ mod tests {
                 age: None,
                 sleep_target_hours: Some(8.0),
                 steps_target: Some(10_000),
+                rhr_baseline: None,
+                hrv_baseline: None,
+                vo2_max: None,
+                lean_body_mass_kg: None,
             },
             providers: ProvidersConfig {
                 garmin: Some(GarminConfig {

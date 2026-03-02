@@ -41,6 +41,19 @@ pub fn calculate_vitality(
     let sleep_target = config.user.sleep_target_hours.unwrap_or(8.0);
     let steps_target = config.user.steps_target.unwrap_or(10_000);
 
+    // Compute 30-day heart baselines from DB, with config overrides and hardcoded fallbacks.
+    let auto_baselines = queries::compute_heart_baselines(db)?;
+    let rhr_baseline = config
+        .user
+        .rhr_baseline
+        .or(auto_baselines.rhr_avg)
+        .unwrap_or(60.0);
+    let hrv_baseline = config
+        .user
+        .hrv_baseline
+        .or(auto_baselines.hrv_avg)
+        .unwrap_or(50.0);
+
     // Build scores for each date that has sleep data (sleep is the anchor).
     let mut scores = Vec::new();
 
@@ -50,10 +63,11 @@ pub fn calculate_vitality(
         // Sleep score (30%): based on total sleep vs target + sleep_score from device
         let sleep_component = calculate_sleep_score(sleep, sleep_target);
 
-        // Recovery score (25%): body battery peak + HRV
+        // Recovery score (25%): body battery peak + HRV + RHR (relative to baselines)
         let recovery = recovery_data.iter().find(|r| r.date == *date);
         let heart = heart_data.iter().find(|h| h.date == *date);
-        let recovery_component = calculate_recovery_score(recovery, heart);
+        let recovery_component =
+            calculate_recovery_score(recovery, heart, rhr_baseline, hrv_baseline);
 
         // Activity score (25%): steps vs target
         let activity = activity_data.iter().find(|a| a.date == *date);
@@ -97,6 +111,8 @@ fn calculate_sleep_score(sleep: &crate::models::Sleep, target_hours: f64) -> f64
 fn calculate_recovery_score(
     recovery: Option<&crate::models::Recovery>,
     heart: Option<&crate::models::Heart>,
+    rhr_baseline: f64,
+    hrv_baseline: f64,
 ) -> f64 {
     let mut components = Vec::new();
 
@@ -107,11 +123,16 @@ fn calculate_recovery_score(
         }
     }
 
-    // HRV -- normalize (higher is better, typical range 20-80 ms).
-    // Score: clamp(hrv / 60 * 100, 0, 100)
     if let Some(h) = heart {
+        // HRV score: ratio to personal baseline (higher is better).
         if let Some(hrv) = h.hrv_avg {
-            components.push((hrv / 60.0 * 100.0).clamp(0.0, 100.0));
+            components.push((hrv / hrv_baseline * 100.0).clamp(0.0, 100.0));
+        }
+
+        // RHR score: lower is better relative to baseline.
+        // At baseline -> 100, 10% above baseline -> ~90.
+        if let Some(rhr) = h.resting_hr {
+            components.push(((2.0 - rhr as f64 / rhr_baseline) * 100.0).clamp(0.0, 100.0));
         }
     }
 
@@ -158,6 +179,10 @@ mod tests {
                 age: None,
                 sleep_target_hours: Some(8.0),
                 steps_target: Some(10_000),
+                rhr_baseline: None,
+                hrv_baseline: None,
+                vo2_max: None,
+                lean_body_mass_kg: None,
             },
             providers: ProvidersConfig {
                 garmin: None,
@@ -234,7 +259,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn recovery_score_with_battery_and_hrv() {
+    fn recovery_score_with_battery_hrv_and_rhr() {
         let recovery = Recovery {
             date: "2026-03-01".into(),
             body_battery_charged: None,
@@ -245,23 +270,23 @@ mod tests {
         };
         let heart = Heart {
             date: "2026-03-01".into(),
-            resting_hr: None,
+            resting_hr: Some(60),  // at baseline -> RHR score 100
             max_hr: None,
             min_hr: None,
-            hrv_avg: Some(45.0), // 45/60*100 = 75
+            hrv_avg: Some(45.0), // 45/50*100 = 90
             source: "garmin".into(),
         };
-        let score = calculate_recovery_score(Some(&recovery), Some(&heart));
-        // avg(80, 75) = 77.5
+        let score = calculate_recovery_score(Some(&recovery), Some(&heart), 60.0, 50.0);
+        // avg(80, 90, 100) = 90
         assert!(
-            (score - 77.5).abs() < 0.01,
-            "Expected ~77.5, got {score}"
+            (score - 90.0).abs() < 0.01,
+            "Expected ~90.0, got {score}"
         );
     }
 
     #[test]
     fn recovery_score_no_data_returns_neutral() {
-        let score = calculate_recovery_score(None, None);
+        let score = calculate_recovery_score(None, None, 60.0, 50.0);
         assert!(
             (score - 50.0).abs() < f64::EPSILON,
             "Expected 50.0, got {score}"
@@ -278,10 +303,46 @@ mod tests {
             body_battery_low: None,
             source: "garmin".into(),
         };
-        let score = calculate_recovery_score(Some(&recovery), None);
+        let score = calculate_recovery_score(Some(&recovery), None, 60.0, 50.0);
         assert!(
             (score - 90.0).abs() < f64::EPSILON,
             "Expected 90.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn rhr_at_baseline_scores_100() {
+        let heart = Heart {
+            date: "2026-03-01".into(),
+            resting_hr: Some(55),
+            max_hr: None,
+            min_hr: None,
+            hrv_avg: None,
+            source: "garmin".into(),
+        };
+        let score = calculate_recovery_score(None, Some(&heart), 55.0, 50.0);
+        // RHR only: (2.0 - 55/55) * 100 = 100
+        assert!(
+            (score - 100.0).abs() < 0.01,
+            "Expected 100.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn rhr_above_baseline_scores_lower() {
+        let heart = Heart {
+            date: "2026-03-01".into(),
+            resting_hr: Some(66), // 10% above baseline of 60
+            max_hr: None,
+            min_hr: None,
+            hrv_avg: None,
+            source: "garmin".into(),
+        };
+        let score = calculate_recovery_score(None, Some(&heart), 60.0, 50.0);
+        // (2.0 - 66/60) * 100 = (2.0 - 1.1) * 100 = 90
+        assert!(
+            (score - 90.0).abs() < 0.01,
+            "Expected ~90.0, got {score}"
         );
     }
 
@@ -384,6 +445,153 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Baseline resolution (config override vs auto-computed vs fallback)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn baselines_auto_computed_from_db() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let config = test_config(); // all baseline fields None
+        let today = chrono::Local::now().date_naive().to_string();
+
+        // Insert heart data so auto-baselines are computed.
+        queries::upsert_heart(
+            &db,
+            &Heart {
+                date: today.clone(),
+                resting_hr: Some(58),
+                max_hr: None,
+                min_hr: None,
+                hrv_avg: Some(55.0),
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+
+        // Insert sleep (anchor) + the same heart data.
+        queries::upsert_sleep(
+            &db,
+            &Sleep {
+                date: today.clone(),
+                total_seconds: 28800,
+                deep_seconds: 0,
+                rem_seconds: 0,
+                light_seconds: 0,
+                awake_seconds: 0,
+                sleep_score: None,
+                hrv_ms: None,
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+
+        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        assert_eq!(scores.len(), 1);
+
+        // With auto-baselines rhr=58, hrv=55 and today's values equal to those:
+        // HRV: 55/55*100 = 100, RHR: (2-58/58)*100 = 100 -> avg = 100
+        assert!(
+            (scores[0].recovery_score - 100.0).abs() < 0.01,
+            "Expected 100.0 (at baseline), got {}",
+            scores[0].recovery_score
+        );
+    }
+
+    #[test]
+    fn config_baseline_overrides_auto_computed() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let mut config = test_config();
+        config.user.rhr_baseline = Some(50.0); // override: lower baseline
+        config.user.hrv_baseline = Some(70.0); // override: higher baseline
+
+        let today = chrono::Local::now().date_naive().to_string();
+
+        queries::upsert_heart(
+            &db,
+            &Heart {
+                date: today.clone(),
+                resting_hr: Some(55), // above config baseline of 50
+                max_hr: None,
+                min_hr: None,
+                hrv_avg: Some(56.0), // below config baseline of 70
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+
+        queries::upsert_sleep(
+            &db,
+            &Sleep {
+                date: today.clone(),
+                total_seconds: 28800,
+                deep_seconds: 0,
+                rem_seconds: 0,
+                light_seconds: 0,
+                awake_seconds: 0,
+                sleep_score: None,
+                hrv_ms: None,
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+
+        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        // Config baselines used: rhr=50, hrv=70
+        // HRV: 56/70*100 = 80, RHR: (2-55/50)*100 = (2-1.1)*100 = 90 -> avg = 85
+        assert!(
+            (scores[0].recovery_score - 85.0).abs() < 0.01,
+            "Expected ~85.0, got {}",
+            scores[0].recovery_score
+        );
+    }
+
+    #[test]
+    fn fallback_to_hardcoded_defaults_when_no_db_and_no_config() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let config = test_config(); // all baseline fields None
+        let today = chrono::Local::now().date_naive().to_string();
+
+        // Insert heart data for today only (no 30-day history that differs).
+        queries::upsert_heart(
+            &db,
+            &Heart {
+                date: today.clone(),
+                resting_hr: Some(60),
+                max_hr: None,
+                min_hr: None,
+                hrv_avg: Some(50.0),
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+
+        queries::upsert_sleep(
+            &db,
+            &Sleep {
+                date: today.clone(),
+                total_seconds: 28800,
+                deep_seconds: 0,
+                rem_seconds: 0,
+                light_seconds: 0,
+                awake_seconds: 0,
+                sleep_score: None,
+                hrv_ms: None,
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+
+        // Auto-baselines from the 1 day of data: rhr=60, hrv=50 (same as hardcoded fallbacks).
+        // At baseline: HRV=100, RHR=100 -> avg=100
+        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        assert!(
+            (scores[0].recovery_score - 100.0).abs() < 0.01,
+            "Expected 100.0, got {}",
+            scores[0].recovery_score
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Full calculate_vitality with in-memory DB
     // -----------------------------------------------------------------------
 
@@ -475,10 +683,11 @@ mod tests {
             s.sleep_score
         );
 
-        // Recovery: body_battery_peak=80, hrv=60/60*100=100 -> avg(80,100)=90
+        // Recovery: only 1 day of heart data, so auto-baselines = rhr=55, hrv=60.
+        // body_battery_peak=80, hrv=60/60*100=100, rhr=(2-55/55)*100=100 -> avg(80,100,100)=93.33
         assert!(
-            (s.recovery_score - 90.0).abs() < 0.01,
-            "Recovery: expected 90.0, got {}",
+            (s.recovery_score - 93.33).abs() < 0.01,
+            "Recovery: expected ~93.33, got {}",
             s.recovery_score
         );
 
@@ -496,11 +705,12 @@ mod tests {
             s.stress_score
         );
 
-        // Total: 90*0.30 + 90*0.25 + 100*0.25 + 75*0.20
-        //      = 27 + 22.5 + 25 + 15 = 89.5
+        // Total: 90*0.30 + 93.33*0.25 + 100*0.25 + 75*0.20
+        //      = 27 + 23.33 + 25 + 15 = 90.33
+        let expected_total = 90.0 * 0.30 + 93.33 * 0.25 + 100.0 * 0.25 + 75.0 * 0.20;
         assert!(
-            (s.total_score - 89.5).abs() < 0.01,
-            "Total: expected 89.5, got {}",
+            (s.total_score - expected_total).abs() < 0.1,
+            "Total: expected ~{expected_total}, got {}",
             s.total_score
         );
     }
