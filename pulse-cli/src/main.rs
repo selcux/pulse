@@ -8,7 +8,12 @@ use pulse_core::sync;
 use pulse_core::vitality;
 
 #[derive(Parser)]
-#[command(name = "pulse", about = "Health data unification system", version)]
+#[command(
+    name = "pulse",
+    about = "Unified health data from Garmin Connect and Intervals.icu",
+    version,
+    after_help = "Get started:\n  pulse garmin-login -u you@example.com\n  pulse sync garmin --days 7\n  pulse vitality --days 7"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -16,46 +21,60 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Sync health data from providers
+    /// Authenticate with Garmin Connect (SSO + OAuth)
+    GarminLogin {
+        /// Garmin Connect username/email
+        #[arg(short, long)]
+        username: Option<String>,
+        /// MFA verification code (if prompted on first attempt)
+        #[arg(long)]
+        mfa: Option<String>,
+    },
+    /// Sync health data from providers [garmin, intervals]
     Sync {
-        /// Provider to sync (omit for all)
+        /// Provider to sync (omit for all enabled)
         provider: Option<String>,
         /// Number of days to sync
         #[arg(short, long, default_value_t = 1)]
         days: u32,
     },
-    /// Show sleep data
+    /// Show sleep duration, stages, and scores
     Sleep {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Show heart/HRV data
+    /// Show resting heart rate, min/max HR, and HRV
     Heart {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Show body battery/recovery data
+    /// Show body battery peak/low values
     Recovery {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Show steps/activity data
+    /// Show steps, active minutes, and floors
     Activity {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Show stress data
+    /// Show average and max stress levels
     Stress {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
@@ -63,17 +82,19 @@ enum Commands {
     Workouts {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Show composite vitality score
+    /// Show composite vitality score (sleep + recovery + activity + stress)
     Vitality {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
+        /// Output as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Configuration management
+    /// Manage configuration
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
@@ -90,6 +111,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::GarminLogin { username, mfa } => cmd_garmin_login(username, mfa),
         Commands::Sync { provider, days } => cmd_sync(provider, days),
         Commands::Sleep { days, json } => cmd_sleep(days, json),
         Commands::Heart { days, json } => cmd_heart(days, json),
@@ -473,6 +495,53 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn cmd_garmin_login(username: Option<String>, mfa: Option<String>) -> anyhow::Result<()> {
+    use pulse_core::providers::garmin::auth::LoginResult;
+    use pulse_core::providers::garmin::GarminProvider;
+
+    // Resolve username: CLI arg > config > prompt
+    let email = if let Some(u) = username {
+        u
+    } else {
+        let cfg = config::load_config()?;
+        if let Some(garmin_cfg) = &cfg.providers.garmin {
+            if let Some(ref u) = garmin_cfg.username {
+                println!("Using username from config: {}", u);
+                u.clone()
+            } else {
+                prompt_input("Garmin email: ")?
+            }
+        } else {
+            prompt_input("Garmin email: ")?
+        }
+    };
+
+    let password = rpassword::read_password_from_tty(Some("Garmin password: "))?;
+
+    let provider = GarminProvider::new();
+    match provider.login(&email, &password, mfa.as_deref())? {
+        LoginResult::Success => {
+            println!("Login successful! Tokens saved to ~/.pulse/garmin/");
+            println!("You can now run: pulse sync garmin");
+        }
+        LoginResult::MfaRequired => {
+            println!("MFA required. Re-run with --mfa <code>:");
+            println!("  pulse garmin-login -u {} --mfa <code>", email);
+        }
+    }
+
+    Ok(())
+}
+
+fn prompt_input(prompt: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+    print!("{}", prompt);
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
 }
 
 fn cmd_config(action: Option<ConfigAction>) -> anyhow::Result<()> {

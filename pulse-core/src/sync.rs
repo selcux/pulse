@@ -111,6 +111,7 @@ mod tests {
             providers: ProvidersConfig {
                 garmin: Some(GarminConfig {
                     enabled: garmin_enabled,
+                    username: None,
                 }),
                 intervals,
             },

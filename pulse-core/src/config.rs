@@ -30,6 +30,7 @@ pub struct ProvidersConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GarminConfig {
     pub enabled: bool,
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,7 +60,10 @@ pub fn default_config() -> PulseConfig {
             lean_body_mass_kg: None,
         },
         providers: ProvidersConfig {
-            garmin: Some(GarminConfig { enabled: false }),
+            garmin: Some(GarminConfig {
+                enabled: false,
+                username: None,
+            }),
             intervals: None,
         },
     }
