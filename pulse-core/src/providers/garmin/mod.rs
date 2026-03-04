@@ -44,7 +44,7 @@ impl GarminProvider {
     // Mapping helpers
     // -----------------------------------------------------------------------
 
-    fn map_sleep(date: NaiveDate, resp: &GarminSleepResponse) -> Option<Sleep> {
+    fn map_sleep(date: NaiveDate, resp: &GarminSleepResponse, hrv_avg: Option<f64>) -> Option<Sleep> {
         let dto = resp.daily_sleep_dto.as_ref()?;
         Some(Sleep {
             date: date.to_string(),
@@ -58,7 +58,7 @@ impl GarminProvider {
                 .as_ref()
                 .and_then(|s| s.overall.as_ref())
                 .and_then(|o| o.value),
-            hrv_ms: None, // HRV comes from separate endpoint
+            hrv_ms: hrv_avg,
             source: "garmin".into(),
         })
     }
@@ -182,20 +182,20 @@ impl GarminProvider {
     fn sync_date(&self, db: &Database, api: &GarminApi, date: NaiveDate) -> Result<usize> {
         let mut count = 0;
 
-        // 1. Sleep
-        let sleep_resp = api.fetch_sleep(date)?;
-        if let Some(sleep) = Self::map_sleep(date, &sleep_resp) {
-            queries::upsert_sleep(db, &sleep)?;
-            count += 1;
-        }
-
-        // 2. HRV (separate endpoint)
+        // 1. HRV (separate endpoint) — fetched first so sleep can include it
         let hrv_avg = match api.fetch_hrv(date) {
             Ok(hrv_resp) => hrv_resp
                 .hrv_summary
                 .and_then(|s| s.last_night_avg),
             Err(_) => None, // HRV often missing, don't fail the whole date
         };
+
+        // 2. Sleep
+        let sleep_resp = api.fetch_sleep(date)?;
+        if let Some(sleep) = Self::map_sleep(date, &sleep_resp, hrv_avg) {
+            queries::upsert_sleep(db, &sleep)?;
+            count += 1;
+        }
 
         // 3. Daily summary → Heart, Recovery, Activity, Stress
         let summary = api.fetch_daily_summary(date)?;
@@ -260,11 +260,12 @@ mod tests {
             }),
         };
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        let sleep = GarminProvider::map_sleep(date, &resp).unwrap();
+        let sleep = GarminProvider::map_sleep(date, &resp, Some(45.0)).unwrap();
         assert_eq!(sleep.date, "2026-03-01");
         assert_eq!(sleep.total_seconds, 28800);
         assert_eq!(sleep.deep_seconds, 7200);
         assert_eq!(sleep.sleep_score, Some(82));
+        assert_eq!(sleep.hrv_ms, Some(45.0));
         assert_eq!(sleep.source, "garmin");
     }
 
@@ -274,7 +275,7 @@ mod tests {
             daily_sleep_dto: None,
         };
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        assert!(GarminProvider::map_sleep(date, &resp).is_none());
+        assert!(GarminProvider::map_sleep(date, &resp, None).is_none());
     }
 
     #[test]
@@ -334,11 +335,15 @@ mod tests {
             total_steps: Some(12345),
             highly_active_seconds: Some(1800),
             active_seconds: Some(3600),
-            floors_ascended: Some(10),
+            floors_ascended: Some(10.0),
             average_stress_level: Some(35),
             max_stress_level: Some(78),
             body_battery_highest_value: Some(95),
             body_battery_lowest_value: Some(25),
+            total_kilocalories: None,
+            active_kilocalories: None,
+            bmr_kilocalories: None,
+            total_distance_meters: None,
         }
     }
 }

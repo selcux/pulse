@@ -518,7 +518,7 @@ fn cmd_garmin_login(username: Option<String>, mfa: Option<String>) -> anyhow::Re
         }
     };
 
-    let password = rpassword::read_password_from_tty(Some("Garmin password: "))?;
+    let password = rpassword::prompt_password("Garmin password: ")?;
 
     let provider = GarminProvider::new();
     match provider.login(&email, &password, mfa.as_deref())? {

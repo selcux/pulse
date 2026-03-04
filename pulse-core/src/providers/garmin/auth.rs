@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rand::Rng;
+use rand::RngExt;
 use regex::Regex;
 use sha1::Sha1;
 use url::form_urlencoded;
