@@ -12,4 +12,4 @@ categories = ["command-line-utilities"]
 publish = false
 
 [dependencies]
-pulse-health-core = { path = "../pulse-core", version = "0.1.4" }
+pulse-health-core = { path = "../pulse-core", version = "0.1.5" }
