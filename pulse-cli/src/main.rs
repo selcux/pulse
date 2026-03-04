@@ -476,6 +476,13 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if cfg.user.lean_body_mass_kg.is_none() {
+        eprintln!(
+            "Note: lean_body_mass_kg not set in ~/.pulse/config.toml — \
+             fitness score uses VO2 Max only. Set it to improve accuracy."
+        );
+    }
+
     if scores.is_empty() {
         println!("No vitality data for the last {} days. (Sleep data is required as anchor.)", days);
         return Ok(());
@@ -496,23 +503,28 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>10}{sep}{:>10}{sep}{:>8}",
-        "Date", "Total", "Sleep", "Recovery", "Activity", "Stress",
+        "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>10}{sep}{:>10}{sep}{:>8}{sep}{:>9}",
+        "Date", "Total", "Sleep", "Recovery", "Activity", "Stress", "Fitness",
         sep = " \u{2502} "
     );
     println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>10}",
-        "", "", "", "", "", ""
+        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>11}",
+        "", "", "", "", "", "", ""
     );
     for s in &scores {
+        let fitness = match s.fitness_score {
+            Some(f) => format!("{:>9.1}", f),
+            None => format!("{:>9}", "-"),
+        };
         println!(
-            "{:<12}{sep}{:>7.1}{sep}{:>7.1}{sep}{:>10.1}{sep}{:>10.1}{sep}{:>8.1}",
+            "{:<12}{sep}{:>7.1}{sep}{:>7.1}{sep}{:>10.1}{sep}{:>10.1}{sep}{:>8.1}{sep}{}",
             s.date,
             s.total_score,
             s.sleep_score,
             s.recovery_score,
             s.activity_score,
             s.stress_score,
+            fitness,
             sep = " \u{2502} "
         );
     }
