@@ -12,7 +12,7 @@ use super::Database;
 /// applied automatically when the database is opened.
 const CURRENT_VERSION: i32 = 3;
 
-/// Apply all pending schema migrations up to [`CURRENT_VERSION`].
+/// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
 /// Safe to call on an already-migrated database — already-applied migrations
 /// are skipped. Called automatically by
