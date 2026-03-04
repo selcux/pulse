@@ -2,6 +2,13 @@
 name = "pulse-core"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Core library for syncing and scoring health data from Garmin Connect and Intervals.icu"
+keywords = ["health", "garmin", "fitness", "vitality", "wearable"]
+categories = ["command-line-utilities", "database"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

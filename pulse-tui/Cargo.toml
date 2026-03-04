@@ -2,6 +2,12 @@
 name = "pulse-tui"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TUI for pulse health dashboard (work in progress)"
+keywords = ["health", "tui", "fitness"]
+categories = ["command-line-utilities"]
 
 [dependencies]
-pulse-core = { path = "../pulse-core" }
+pulse-core = { path = "../pulse-core", version = "0.1.0" }
