@@ -19,7 +19,7 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use pulse_core::{config, db::Database, sync, vitality};
+//! use pulse_health_core::{config, db::Database, sync, vitality};
 //!
 //! let cfg = config::load_config().unwrap();
 //! let db = Database::open().unwrap();

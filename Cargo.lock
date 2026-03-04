@@ -1163,14 +1163,14 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
- "pulse-core",
+ "pulse-health-core",
  "rpassword",
  "serde_json",
  "toml",
 ]
 
 [[package]]
-name = "pulse-core"
+name = "pulse-health-core"
 version = "0.1.3"
 dependencies = [
  "anyhow",
@@ -1193,7 +1193,7 @@ dependencies = [
 name = "pulse-tui"
 version = "0.1.3"
 dependencies = [
- "pulse-core",
+ "pulse-health-core",
 ]
 
 [[package]]

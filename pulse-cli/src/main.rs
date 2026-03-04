@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 
-use pulse_core::config;
-use pulse_core::db::queries;
-use pulse_core::db::Database;
-use pulse_core::models::ExerciseSet;
-use pulse_core::sync;
-use pulse_core::vitality;
+use pulse_health_core::config;
+use pulse_health_core::db::queries;
+use pulse_health_core::db::Database;
+use pulse_health_core::models::ExerciseSet;
+use pulse_health_core::sync;
+use pulse_health_core::vitality;
 
 #[derive(Parser)]
 #[command(
@@ -533,8 +533,8 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
 }
 
 fn cmd_garmin_login(username: Option<String>, mfa: Option<String>) -> anyhow::Result<()> {
-    use pulse_core::providers::garmin::auth::LoginResult;
-    use pulse_core::providers::garmin::GarminProvider;
+    use pulse_health_core::providers::garmin::auth::LoginResult;
+    use pulse_health_core::providers::garmin::GarminProvider;
 
     // Resolve username: CLI arg > config > prompt
     let email = if let Some(u) = username {
