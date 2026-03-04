@@ -89,7 +89,7 @@ impl GarminProvider {
             max_hr: summary.max_heart_rate,
             min_hr: summary.min_heart_rate,
             hrv_avg,
-            vo2_max: None, // populated in Task 2 once vo2_max_value is on GarminDailySummaryResponse
+            vo2_max: summary.vo2_max_value,
             source: "garmin".into(),
         }
     }
@@ -428,6 +428,7 @@ mod tests {
             active_kilocalories: None,
             bmr_kilocalories: None,
             total_distance_meters: None,
+            vo2_max_value: None,
         }
     }
 }

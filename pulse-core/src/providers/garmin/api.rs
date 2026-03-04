@@ -125,6 +125,9 @@ pub struct GarminDailySummaryResponse {
     pub bmr_kilocalories: Option<f64>,
     #[serde(default)]
     pub total_distance_meters: Option<f64>,
+    // Fitness
+    #[serde(default)]
+    pub vo2_max_value: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -313,5 +316,13 @@ mod tests {
         assert_eq!(resp.resting_heart_rate, Some(60));
         assert!(resp.total_steps.is_none());
         assert!(resp.average_stress_level.is_none());
+    }
+
+    #[test]
+    fn deserialize_daily_summary_with_vo2_max() {
+        let json = r#"{"restingHeartRate": 58, "vo2MaxValue": 48.5}"#;
+        let resp: GarminDailySummaryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.resting_heart_rate, Some(58));
+        assert!((resp.vo2_max_value.unwrap() - 48.5).abs() < 0.01);
     }
 }
