@@ -1,9 +1,22 @@
+//! Schema migrations for the local SQLite database.
+//!
+//! Migrations are numbered and applied in order. The current schema version
+//! is tracked in the `sync_state` table under the key `"schema_version"`.
+//! [`run`] is called automatically by [`Database::open`](crate::db::Database::open).
+
 use anyhow::{Context, Result};
 
 use super::Database;
 
+/// The schema version this build expects. Migrations up to this version are
+/// applied automatically when the database is opened.
 const CURRENT_VERSION: i32 = 3;
 
+/// Apply all pending schema migrations up to [`CURRENT_VERSION`].
+///
+/// Safe to call on an already-migrated database — already-applied migrations
+/// are skipped. Called automatically by
+/// [`Database::open`](crate::db::Database::open).
 pub fn run(db: &Database) -> Result<()> {
     let conn = db.conn();
 
