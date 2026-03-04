@@ -95,8 +95,8 @@ pub fn calculate_vitality(
         .or(auto_baselines.hrv_avg)
         .unwrap_or(50.0);
 
-    // VO2 Max baseline: config override > 30-day DB avg > None (excluded)
-    let vo2_baseline = config.user.vo2_max.or(queries::compute_vo2_baseline(db)?);
+    // VO2 Max baseline: 30-day DB avg (live Garmin data) > config fallback > None (excluded)
+    let vo2_baseline = queries::compute_vo2_baseline(db)?.or(config.user.vo2_max);
 
     // Build scores for each date that has sleep data (sleep is the anchor).
     let mut scores = Vec::new();
@@ -122,9 +122,10 @@ pub fn calculate_vitality(
         let stress_component = calculate_stress_score(stress);
 
         // Fitness score (20% when present): VO2 Max + lean body mass
-        let day_vo2 = heart.and_then(|h| h.vo2_max);
+        // vo2_baseline used as fallback when day has no VO2 reading (Garmin doesn't record daily)
+        let day_vo2 = heart.and_then(|h| h.vo2_max).or(vo2_baseline);
         let fitness_component =
-            calculate_fitness_score(day_vo2, vo2_baseline, config.user.lean_body_mass_kg);
+            calculate_fitness_score(day_vo2, config.user.lean_body_mass_kg, config.user.height_cm);
 
         let total = compute_total_score(
             sleep_component,
@@ -148,22 +149,51 @@ pub fn calculate_vitality(
     Ok(scores)
 }
 
+/// Piecewise linear VO2 score against Shvartz & Reinbold (1990) population norms for men.
+/// Boundaries match the Finnish fitness classification (Urheiluhallit / Heikko…Erinomainen).
+fn vo2_population_score(vo2: f64) -> f64 {
+    const NORMS: &[(f64, f64)] = &[
+        (0.0,   0.0),
+        (26.0,  14.3),
+        (32.0,  28.6),
+        (36.0,  42.9),
+        (42.0,  57.1),
+        (47.0,  71.4),
+        (52.0,  85.7),
+        (60.0, 100.0),
+    ];
+    for w in NORMS.windows(2) {
+        let (v0, s0) = w[0];
+        let (v1, s1) = w[1];
+        if vo2 <= v1 {
+            return s0 + (vo2 - v0) / (v1 - v0) * (s1 - s0);
+        }
+    }
+    100.0
+}
+
 fn calculate_fitness_score(
     vo2: Option<f64>,
-    vo2_baseline: Option<f64>,
     lbm_kg: Option<f64>,
+    height_cm: Option<f64>,
 ) -> Option<f64> {
     let mut components = Vec::new();
 
-    if let (Some(v), Some(b)) = (vo2, vo2_baseline) {
-        if b > 0.0 {
-            components.push((v / b * 100.0).clamp(0.0, 100.0));
-        }
+    if let Some(v) = vo2 {
+        components.push(vo2_population_score(v));
     }
 
     if let Some(lbm) = lbm_kg {
-        // Normalise against 70 kg reference (rough population average).
-        components.push((lbm / 70.0 * 100.0).clamp(0.0, 100.0));
+        let lbm_score = if let Some(h) = height_cm {
+            // FFMI = lbm_kg / height_m²; natural athlete ceiling ≈ 25
+            let height_m = h / 100.0;
+            let ffmi = lbm / (height_m * height_m);
+            (ffmi / 25.0 * 100.0).clamp(0.0, 100.0)
+        } else {
+            // Fallback: flat 70 kg reference
+            (lbm / 70.0 * 100.0).clamp(0.0, 100.0)
+        };
+        components.push(lbm_score);
     }
 
     if components.is_empty() {
@@ -276,6 +306,7 @@ mod tests {
                 hrv_baseline: None,
                 vo2_max: None,
                 lean_body_mass_kg: None,
+                height_cm: None,
             },
             providers: ProvidersConfig {
                 garmin: None,
@@ -909,36 +940,79 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // vo2_population_score
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn vo2_score_at_poor_boundary() {
+        // VO2=28.1 is in Heikko (Poor) range: 14.3 + (2.1/6.0)*14.3 ≈ 19.3
+        let score = vo2_population_score(28.1);
+        assert!((score - 19.3).abs() < 0.2, "Expected ~19.3, got {score}");
+    }
+
+    #[test]
+    fn vo2_score_excellent() {
+        // VO2=52 → boundary score 85.7
+        let score = vo2_population_score(52.0);
+        assert!((score - 85.7).abs() < 0.01, "Expected 85.7, got {score}");
+    }
+
+    #[test]
+    fn vo2_score_average() {
+        // VO2=39 is in Välttävä–Keskitaso range: 42.9 + (3.0/6.0)*14.2 ≈ 50.0
+        let score = vo2_population_score(39.0);
+        assert!((score - 50.0).abs() < 0.2, "Expected ~50.0, got {score}");
+    }
+
+    #[test]
+    fn vo2_score_above_elite_cap() {
+        // VO2 above 60 → capped at 100
+        let score = vo2_population_score(65.0);
+        assert!((score - 100.0).abs() < 0.01, "Expected 100.0 (cap), got {score}");
+    }
+
+    // -----------------------------------------------------------------------
     // calculate_fitness_score / compute_total_score
     // -----------------------------------------------------------------------
 
     #[test]
-    fn fitness_score_with_vo2_at_baseline() {
-        let score = calculate_fitness_score(Some(50.0), Some(50.0), None);
+    fn fitness_score_at_poor_vo2() {
+        // VO2=28.1 → ~19.3; no LBM
+        let score = calculate_fitness_score(Some(28.1), None, None);
         assert!(score.is_some());
-        assert!((score.unwrap() - 100.0).abs() < 0.01);
+        assert!((score.unwrap() - 19.3).abs() < 0.2, "Expected ~19.3, got {:?}", score);
     }
 
     #[test]
-    fn fitness_score_with_no_vo2_returns_none() {
+    fn fitness_score_with_no_data_returns_none() {
         let score = calculate_fitness_score(None, None, None);
         assert!(score.is_none());
     }
 
     #[test]
-    fn fitness_score_with_lbm_blends_score() {
-        // vo2=50, baseline=50 → vo2_score=100; lbm=70 → lbm_score=100; avg=100
-        let score = calculate_fitness_score(Some(50.0), Some(50.0), Some(70.0));
+    fn fitness_score_lbm_only_no_vo2() {
+        // No vo2 → excluded; lbm=70, no height → 70/70*100 = 100
+        let score = calculate_fitness_score(None, Some(70.0), None);
         assert!(score.is_some());
-        assert!((score.unwrap() - 100.0).abs() < 0.01);
+        assert!((score.unwrap() - 100.0).abs() < 0.01, "Expected 100.0, got {:?}", score);
     }
 
     #[test]
-    fn fitness_score_lbm_only_no_vo2_baseline() {
-        // No vo2 baseline → vo2 component excluded; only lbm contributes
-        let score = calculate_fitness_score(Some(50.0), None, Some(70.0));
+    fn fitness_score_lbm_with_height_uses_ffmi() {
+        // lbm=72.7, height=183cm → ffmi=72.7/1.83²=21.71 → 21.71/25*100=86.84
+        let score = calculate_fitness_score(None, Some(72.7), Some(183.0));
         assert!(score.is_some());
-        assert!((score.unwrap() - 100.0).abs() < 0.01);
+        let s = score.unwrap();
+        assert!((s - 86.8).abs() < 0.2, "Expected ~86.8, got {s}");
+    }
+
+    #[test]
+    fn fitness_score_blends_vo2_and_lbm() {
+        // VO2=28.1 → ~19.3; lbm=72.7 height=183 → ~86.8; avg ≈ 53.1
+        let score = calculate_fitness_score(Some(28.1), Some(72.7), Some(183.0));
+        assert!(score.is_some());
+        let s = score.unwrap();
+        assert!((s - 53.1).abs() < 0.5, "Expected ~53.1, got {s}");
     }
 
     #[test]

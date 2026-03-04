@@ -19,6 +19,7 @@ pub struct UserConfig {
     pub hrv_baseline: Option<f64>,
     pub vo2_max: Option<f64>,
     pub lean_body_mass_kg: Option<f64>,
+    pub height_cm: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +59,7 @@ pub fn default_config() -> PulseConfig {
             hrv_baseline: None,
             vo2_max: None,
             lean_body_mass_kg: None,
+            height_cm: None,
         },
         providers: ProvidersConfig {
             garmin: Some(GarminConfig {

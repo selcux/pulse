@@ -107,6 +107,7 @@ mod tests {
                 hrv_baseline: None,
                 vo2_max: None,
                 lean_body_mass_kg: None,
+                height_cm: None,
             },
             providers: ProvidersConfig {
                 garmin: Some(GarminConfig {
