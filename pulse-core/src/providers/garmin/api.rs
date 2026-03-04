@@ -8,6 +8,29 @@ const CONNECT_API: &str = "https://connectapi.garmin.com";
 // Response types (matching actual Garmin Connect API shapes)
 // ---------------------------------------------------------------------------
 
+/// Exercise sets endpoint: /activity-service/activity/{id}/exerciseSets
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GarminExerciseSetsResponse {
+    pub exercise_sets: Vec<GarminExerciseSet>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GarminExerciseSet {
+    pub exercises: Vec<GarminExercise>,
+    pub repetition_count: Option<i32>,
+    /// Weight in grams (divide by 1000 to get kg).
+    pub weight: Option<f64>,
+    pub set_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GarminExercise {
+    pub category: Option<String>,
+    pub name: Option<String>,
+}
+
 /// Sleep endpoint: /sleep-service/sleep/dailySleepData?date={d}
 #[derive(Debug, Deserialize)]
 pub struct GarminSleepResponse {
@@ -145,6 +168,13 @@ impl<'a> GarminApi<'a> {
             "{CONNECT_API}/usersummary-service/usersummary/daily/?calendarDate={date}"
         );
         self.get_json(&url, "daily summary")
+    }
+
+    pub fn fetch_exercise_sets(&self, garmin_activity_id: &str) -> Result<GarminExerciseSetsResponse> {
+        let url = format!(
+            "{CONNECT_API}/activity-service/activity/{garmin_activity_id}/exerciseSets"
+        );
+        self.get_json(&url, "exercise sets")
     }
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str, label: &str) -> Result<T> {

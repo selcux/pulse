@@ -6,6 +6,7 @@ use crate::config::IntervalsConfig;
 use crate::db::queries;
 use crate::db::Database;
 use crate::models::{ExerciseSet, Workout};
+use crate::providers::garmin::{api::GarminApi, auth, tokens};
 use crate::providers::{DateRange, MetricType, Provider, SyncReport};
 
 const BASE_URL: &str = "https://intervals.icu/api/v1";
@@ -30,23 +31,58 @@ struct ApiActivity {
     calories: Option<f64>,
     average_heartrate: Option<f64>,
     max_heartrate: Option<f64>,
+    /// Garmin Connect activity ID — used to fetch exercise sets.
+    external_id: Option<String>,
 }
 
-/// Represents the full activity detail (used to extract exercise sets).
-/// GET /api/v1/activity/{id}
-#[derive(Debug, Deserialize)]
-struct ApiActivityDetail {
-    #[serde(default)]
-    icu_sets: Option<Vec<ApiExerciseSet>>,
+// ---------------------------------------------------------------------------
+// Garmin exercise set mapping
+// ---------------------------------------------------------------------------
+
+/// Convert a Garmin SCREAMING_SNAKE_CASE name to Title Case.
+/// e.g. "CABLE_EXTERNAL_ROTATION" → "Cable External Rotation"
+fn format_garmin_name(s: &str) -> String {
+    s.split('_')
+        .filter(|w| !w.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// A single exercise set from Intervals.icu's `icu_sets` array.
-#[derive(Debug, Deserialize)]
-struct ApiExerciseSet {
-    exercise: Option<String>,
-    reps: Option<i32>,
-    weight: Option<f64>,
-    category: Option<String>,
+/// Map Garmin Connect exercise sets to our ExerciseSet model, filtering REST sets.
+fn map_garmin_exercise_sets(
+    workout_id: &str,
+    api_sets: &[crate::providers::garmin::api::GarminExerciseSet],
+) -> Vec<ExerciseSet> {
+    api_sets
+        .iter()
+        .filter(|s| s.set_type.as_deref().map(str::to_uppercase).as_deref() != Some("REST"))
+        .filter(|s| !s.exercises.is_empty())
+        .enumerate()
+        .map(|(i, s)| {
+            let exercise = s.exercises.first();
+            ExerciseSet {
+                id: None,
+                workout_id: workout_id.to_string(),
+                set_order: (i + 1) as i32,
+                exercise_category: exercise
+                    .and_then(|e| e.category.as_deref())
+                    .map(format_garmin_name),
+                exercise_name: exercise
+                    .and_then(|e| e.name.as_deref())
+                    .map(format_garmin_name)
+                    .unwrap_or_else(|| "Unknown".into()),
+                repetitions: s.repetition_count,
+                weight_kg: s.weight.map(|w| w / 1000.0),
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -96,26 +132,6 @@ impl IntervalsProvider {
         Ok(activities)
     }
 
-    /// Fetch full activity detail (needed for exercise sets on strength workouts).
-    fn fetch_activity_detail(&self, activity_id: &str) -> Result<ApiActivityDetail> {
-        let url = format!("{BASE_URL}/activity/{activity_id}");
-
-        let resp = self
-            .client
-            .get(&url)
-            .basic_auth("API_KEY", Some(&self.config.api_key))
-            .send()
-            .context("Failed to call Intervals.icu activity detail endpoint")?
-            .error_for_status()
-            .context("Intervals.icu activity detail endpoint returned an error")?;
-
-        let detail: ApiActivityDetail = resp
-            .json()
-            .context("Failed to deserialize Intervals.icu activity detail")?;
-
-        Ok(detail)
-    }
-
     /// Returns true if the activity type looks like a strength/weight training workout.
     fn is_strength_activity(activity_type: &str) -> bool {
         let lower = activity_type.to_lowercase();
@@ -135,28 +151,6 @@ impl IntervalsProvider {
             max_hr: api.max_heartrate.map(|h| h as i32),
             source: "intervals".into(),
         }
-    }
-
-    /// Convert API exercise sets into our ExerciseSet models, filtering out rest periods.
-    fn map_exercise_sets(workout_id: &str, api_sets: &[ApiExerciseSet]) -> Vec<ExerciseSet> {
-        api_sets
-            .iter()
-            .filter(|s| {
-                let name = s.exercise.as_deref().unwrap_or("").trim();
-                let cat = s.category.as_deref().unwrap_or("").to_lowercase();
-                !name.is_empty() && cat != "rest"
-            })
-            .enumerate()
-            .map(|(i, s)| ExerciseSet {
-                id: None,
-                workout_id: workout_id.to_string(),
-                set_order: (i + 1) as i32,
-                exercise_category: s.category.clone(),
-                exercise_name: s.exercise.clone().unwrap_or_else(|| "Unknown".into()),
-                repetitions: s.reps,
-                weight_kg: s.weight,
-            })
-            .collect()
     }
 }
 
@@ -186,40 +180,54 @@ impl Provider for IntervalsProvider {
             }
             report.records_synced += 1;
 
-            // 3. For strength activities, fetch detail and sync exercise sets
+            // 3. For strength activities, fetch exercise sets from Garmin Connect
             let activity_type = api_activity.activity_type.as_deref().unwrap_or("");
             if Self::is_strength_activity(activity_type) {
-                match self.fetch_activity_detail(&api_activity.id) {
-                    Ok(detail) => {
-                        if let Some(api_sets) = &detail.icu_sets {
-                            // Delete existing sets, then insert fresh ones
-                            if let Err(e) =
-                                queries::delete_exercise_sets_for_workout(db, &api_activity.id)
-                            {
-                                report.errors.push(format!(
-                                    "Failed to clear exercise sets for {}: {e}",
-                                    api_activity.id
-                                ));
-                                continue;
-                            }
-
-                            let sets = Self::map_exercise_sets(&api_activity.id, api_sets);
-                            for set in &sets {
-                                if let Err(e) = queries::insert_exercise_set(db, set) {
-                                    report.errors.push(format!(
-                                        "Failed to insert exercise set for {}: {e}",
-                                        api_activity.id
-                                    ));
+                if let Some(garmin_id) = &api_activity.external_id {
+                    if tokens::tokens_exist() {
+                        match auth::ensure_valid_token(&self.client) {
+                            Ok(token) => {
+                                let garmin_api = GarminApi::new(&self.client, token);
+                                match garmin_api.fetch_exercise_sets(garmin_id) {
+                                    Ok(resp) => {
+                                        if let Err(e) = queries::delete_exercise_sets_for_workout(
+                                            db,
+                                            &api_activity.id,
+                                        ) {
+                                            report.errors.push(format!(
+                                                "Failed to clear exercise sets for {}: {e}",
+                                                api_activity.id
+                                            ));
+                                            continue;
+                                        }
+                                        let sets = map_garmin_exercise_sets(
+                                            &api_activity.id,
+                                            &resp.exercise_sets,
+                                        );
+                                        for set in &sets {
+                                            if let Err(e) = queries::insert_exercise_set(db, set) {
+                                                report.errors.push(format!(
+                                                    "Failed to insert exercise set for {}: {e}",
+                                                    api_activity.id
+                                                ));
+                                            }
+                                        }
+                                        report.records_synced += sets.len();
+                                    }
+                                    Err(e) => {
+                                        report.errors.push(format!(
+                                            "Failed to fetch exercise sets for {} from Garmin: {e}",
+                                            api_activity.id
+                                        ));
+                                    }
                                 }
                             }
-                            report.records_synced += sets.len();
+                            Err(e) => {
+                                eprintln!(
+                                    "[intervals] Garmin auth failed, skipping exercise sets: {e:#}"
+                                );
+                            }
                         }
-                    }
-                    Err(e) => {
-                        report.errors.push(format!(
-                            "Failed to fetch activity detail for {}: {e}",
-                            api_activity.id
-                        ));
                     }
                 }
             }
@@ -286,6 +294,7 @@ mod tests {
             calories: Some(350.0),
             average_heartrate: Some(120.0),
             max_heartrate: Some(155.0),
+            external_id: Some("22005844470".into()),
         };
         let w = IntervalsProvider::map_workout(&api);
         assert_eq!(w.id, "i12345");
@@ -297,65 +306,85 @@ mod tests {
     }
 
     #[test]
-    fn map_exercise_sets_from_api() {
+    fn format_garmin_name_converts_screaming_snake_case() {
+        assert_eq!(format_garmin_name("CABLE_EXTERNAL_ROTATION"), "Cable External Rotation");
+        assert_eq!(format_garmin_name("SHOULDER_STABILITY"), "Shoulder Stability");
+        assert_eq!(format_garmin_name("BENCH_PRESS"), "Bench Press");
+        assert_eq!(format_garmin_name("SQUAT"), "Squat");
+        // Leading underscore (Garmin sometimes prefixes names with _)
+        assert_eq!(format_garmin_name("_90_DEGREE_CABLE_EXTERNAL_ROTATION"), "90 Degree Cable External Rotation");
+    }
+
+    #[test]
+    fn map_garmin_exercise_sets_maps_correctly() {
+        use crate::providers::garmin::api::{GarminExercise, GarminExerciseSet};
+
         let api_sets = vec![
-            ApiExerciseSet {
-                exercise: Some("Bench Press".into()),
-                reps: Some(10),
-                weight: Some(60.0),
-                category: Some("Chest".into()),
+            GarminExerciseSet {
+                exercises: vec![GarminExercise {
+                    category: Some("CHEST".into()),
+                    name: Some("BENCH_PRESS".into()),
+                }],
+                repetition_count: Some(10),
+                weight: Some(60000.0), // 60 kg in grams
+                set_type: Some("ACTIVE".into()),
             },
-            ApiExerciseSet {
-                exercise: Some("Bench Press".into()),
-                reps: Some(8),
-                weight: Some(65.0),
-                category: Some("Chest".into()),
+            GarminExerciseSet {
+                exercises: vec![GarminExercise {
+                    category: Some("CHEST".into()),
+                    name: Some("BENCH_PRESS".into()),
+                }],
+                repetition_count: Some(8),
+                weight: Some(65000.0), // 65 kg in grams
+                set_type: Some("ACTIVE".into()),
             },
         ];
-        let sets = IntervalsProvider::map_exercise_sets("w-001", &api_sets);
+        let sets = map_garmin_exercise_sets("w-001", &api_sets);
         assert_eq!(sets.len(), 2);
         assert_eq!(sets[0].set_order, 1);
         assert_eq!(sets[0].exercise_name, "Bench Press");
+        assert_eq!(sets[0].exercise_category, Some("Chest".into()));
         assert_eq!(sets[1].set_order, 2);
         assert_eq!(sets[1].weight_kg, Some(65.0));
         assert_eq!(sets[0].workout_id, "w-001");
     }
 
     #[test]
-    fn filter_rest_sets() {
+    fn map_garmin_exercise_sets_filters_rest_sets() {
+        use crate::providers::garmin::api::{GarminExercise, GarminExerciseSet};
+
         let api_sets = vec![
-            ApiExerciseSet {
-                exercise: Some("Squat".into()),
-                reps: Some(5),
-                weight: Some(100.0),
-                category: Some("Legs".into()),
+            GarminExerciseSet {
+                exercises: vec![GarminExercise {
+                    category: Some("LEGS".into()),
+                    name: Some("SQUAT".into()),
+                }],
+                repetition_count: Some(5),
+                weight: Some(100000.0),
+                set_type: Some("ACTIVE".into()),
             },
-            // rest set: category == "rest"
-            ApiExerciseSet {
-                exercise: None,
-                reps: None,
+            GarminExerciseSet {
+                exercises: vec![],
+                repetition_count: None,
                 weight: None,
-                category: Some("rest".into()),
+                set_type: Some("REST".into()),
             },
-            // rest set: empty exercise name
-            ApiExerciseSet {
-                exercise: Some("".into()),
-                reps: None,
-                weight: None,
-                category: Some("Rest".into()),
-            },
-            ApiExerciseSet {
-                exercise: Some("Deadlift".into()),
-                reps: Some(3),
-                weight: Some(120.0),
-                category: Some("Back".into()),
+            GarminExerciseSet {
+                exercises: vec![GarminExercise {
+                    category: Some("BACK".into()),
+                    name: Some("DEADLIFT".into()),
+                }],
+                repetition_count: Some(3),
+                weight: Some(120000.0),
+                set_type: Some("ACTIVE".into()),
             },
         ];
-        let sets = IntervalsProvider::map_exercise_sets("w-002", &api_sets);
+        let sets = map_garmin_exercise_sets("w-002", &api_sets);
         assert_eq!(sets.len(), 2);
         assert_eq!(sets[0].exercise_name, "Squat");
         assert_eq!(sets[0].set_order, 1);
         assert_eq!(sets[1].exercise_name, "Deadlift");
         assert_eq!(sets[1].set_order, 2);
+        assert_eq!(sets[1].weight_kg, Some(120.0));
     }
 }
