@@ -1,3 +1,10 @@
+//! Composite vitality scoring and pace-of-aging trend calculation.
+//!
+//! [`calculate_vitality`] produces a [`VitalityScore`] for each day that has
+//! sleep data (sleep is the "anchor" metric). [`calculate_pace`] derives a
+//! trend from a slice of scored days, indicating whether recent vitality is
+//! above or below the longer-term baseline.
+
 use anyhow::Result;
 use serde::Serialize;
 
@@ -5,6 +12,11 @@ use crate::config::PulseConfig;
 use crate::db::queries;
 use crate::db::Database;
 
+/// Composite vitality score for a single day.
+///
+/// `total_score` is a weighted blend of the component scores.
+/// Weights differ depending on whether a `fitness_score` is available —
+/// see [`calculate_vitality`] for the exact formula.
 #[derive(Debug, Clone, Serialize)]
 pub struct VitalityScore {
     pub date: String,
@@ -16,14 +28,19 @@ pub struct VitalityScore {
     pub fitness_score: Option<f64>, // 0-100 (weight: 20% when present)
 }
 
+/// Direction of recent vitality relative to the longer-term baseline.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaceTrend {
+    /// 7-day average is ≥10% above the 30-day average (improving).
     Slowing,
+    /// 7-day average is within 10% of the 30-day average (stable).
     Steady,
+    /// 7-day average is >10% below the 30-day average (declining).
     Accelerating,
 }
 
+/// Pace-of-aging trend computed from a rolling window of vitality scores.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaceInfo {
     pub multiplier: f64,     // 7d_avg / 30d_avg
