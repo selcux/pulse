@@ -8,11 +8,12 @@ use crate::db::Database;
 #[derive(Debug, Clone, Serialize)]
 pub struct VitalityScore {
     pub date: String,
-    pub total_score: f64,    // 0-100
-    pub sleep_score: f64,    // 0-100 (weight: 30%)
-    pub recovery_score: f64, // 0-100 (weight: 25%)
-    pub activity_score: f64, // 0-100 (weight: 25%)
-    pub stress_score: f64,   // 0-100 (weight: 20%)
+    pub total_score: f64,           // 0-100
+    pub sleep_score: f64,           // 0-100 (weight: 30% without fitness, 25% with)
+    pub recovery_score: f64,        // 0-100 (weight: 25% without fitness, 20% with)
+    pub activity_score: f64,        // 0-100 (weight: 25% without fitness, 20% with)
+    pub stress_score: f64,          // 0-100 (weight: 20% without fitness, 15% with)
+    pub fitness_score: Option<f64>, // 0-100 (weight: 20% when present)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +95,9 @@ pub fn calculate_vitality(
         .or(auto_baselines.hrv_avg)
         .unwrap_or(50.0);
 
+    // VO2 Max baseline: config override > 30-day DB avg > None (excluded)
+    let vo2_baseline = config.user.vo2_max.or(queries::compute_vo2_baseline(db)?);
+
     // Build scores for each date that has sleep data (sleep is the anchor).
     let mut scores = Vec::new();
 
@@ -113,26 +117,75 @@ pub fn calculate_vitality(
         let activity = activity_data.iter().find(|a| a.date == *date);
         let activity_component = calculate_activity_score(activity, steps_target);
 
-        // Stress score (20%): inverse -- lower stress = higher score
+        // Stress score (20%/15%): inverse -- lower stress = higher score
         let stress = stress_data.iter().find(|s| s.date == *date);
         let stress_component = calculate_stress_score(stress);
 
-        let total = sleep_component * 0.30
-            + recovery_component * 0.25
-            + activity_component * 0.25
-            + stress_component * 0.20;
+        // Fitness score (20% when present): VO2 Max + lean body mass
+        let day_vo2 = heart.and_then(|h| h.vo2_max);
+        let fitness_component =
+            calculate_fitness_score(day_vo2, vo2_baseline, config.user.lean_body_mass_kg);
+
+        let total = compute_total_score(
+            sleep_component,
+            recovery_component,
+            activity_component,
+            stress_component,
+            fitness_component,
+        );
 
         scores.push(VitalityScore {
             date: date.clone(),
-            total_score: total.clamp(0.0, 100.0),
+            total_score: total,
             sleep_score: sleep_component,
             recovery_score: recovery_component,
             activity_score: activity_component,
             stress_score: stress_component,
+            fitness_score: fitness_component,
         });
     }
 
     Ok(scores)
+}
+
+fn calculate_fitness_score(
+    vo2: Option<f64>,
+    vo2_baseline: Option<f64>,
+    lbm_kg: Option<f64>,
+) -> Option<f64> {
+    let mut components = Vec::new();
+
+    if let (Some(v), Some(b)) = (vo2, vo2_baseline) {
+        if b > 0.0 {
+            components.push((v / b * 100.0).clamp(0.0, 100.0));
+        }
+    }
+
+    if let Some(lbm) = lbm_kg {
+        // Normalise against 70 kg reference (rough population average).
+        components.push((lbm / 70.0 * 100.0).clamp(0.0, 100.0));
+    }
+
+    if components.is_empty() {
+        None
+    } else {
+        Some(components.iter().sum::<f64>() / components.len() as f64)
+    }
+}
+
+fn compute_total_score(
+    sleep: f64,
+    recovery: f64,
+    activity: f64,
+    stress: f64,
+    fitness: Option<f64>,
+) -> f64 {
+    match fitness {
+        Some(f) => (sleep * 0.25 + recovery * 0.20 + activity * 0.20 + stress * 0.15 + f * 0.20)
+            .clamp(0.0, 100.0),
+        None => (sleep * 0.30 + recovery * 0.25 + activity * 0.25 + stress * 0.20)
+            .clamp(0.0, 100.0),
+    }
 }
 
 fn calculate_sleep_score(sleep: &crate::models::Sleep, target_hours: f64) -> f64 {
@@ -782,6 +835,7 @@ mod tests {
             recovery_score: 0.0,
             activity_score: 0.0,
             stress_score: 0.0,
+            fitness_score: None,
         }
     }
 
@@ -852,5 +906,51 @@ mod tests {
         assert!((pace.seven_day_avg - expected_7d).abs() < 0.01);
         assert!((pace.thirty_day_avg - expected_30d).abs() < 0.01);
         assert!((pace.vs_baseline - (expected_7d - expected_30d)).abs() < 0.01);
+    }
+
+    // -----------------------------------------------------------------------
+    // calculate_fitness_score / compute_total_score
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fitness_score_with_vo2_at_baseline() {
+        let score = calculate_fitness_score(Some(50.0), Some(50.0), None);
+        assert!(score.is_some());
+        assert!((score.unwrap() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn fitness_score_with_no_vo2_returns_none() {
+        let score = calculate_fitness_score(None, None, None);
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn fitness_score_with_lbm_blends_score() {
+        // vo2=50, baseline=50 → vo2_score=100; lbm=70 → lbm_score=100; avg=100
+        let score = calculate_fitness_score(Some(50.0), Some(50.0), Some(70.0));
+        assert!(score.is_some());
+        assert!((score.unwrap() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn fitness_score_lbm_only_no_vo2_baseline() {
+        // No vo2 baseline → vo2 component excluded; only lbm contributes
+        let score = calculate_fitness_score(Some(50.0), None, Some(70.0));
+        assert!(score.is_some());
+        assert!((score.unwrap() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn vitality_total_renormalizes_without_fitness() {
+        let total = compute_total_score(80.0, 80.0, 80.0, 80.0, None);
+        assert!((total - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn vitality_total_includes_fitness_when_present() {
+        let without = compute_total_score(80.0, 80.0, 80.0, 80.0, None);
+        let with_fitness = compute_total_score(80.0, 80.0, 80.0, 80.0, Some(40.0));
+        assert!(with_fitness < without, "lower fitness should pull total down");
     }
 }
