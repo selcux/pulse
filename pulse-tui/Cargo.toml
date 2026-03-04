@@ -10,4 +10,4 @@ keywords = ["health", "tui", "fitness"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-pulse-core = { path = "../pulse-core", version = "0.1.0" }
+pulse-core = { path = "../pulse-core", version = "0.1.3" }
