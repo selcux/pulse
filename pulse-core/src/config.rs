@@ -90,7 +90,11 @@ pub fn default_config() -> PulseConfig {
                 enabled: false,
                 username: None,
             }),
-            intervals: None,
+            intervals: Some(IntervalsConfig {
+                enabled: false,
+                api_key: String::new(),
+                athlete_id: String::new(),
+            }),
         },
     }
 }
