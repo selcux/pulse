@@ -425,9 +425,13 @@ fn cmd_workouts(days: i32, json: bool) -> anyhow::Result<()> {
             Some(h) => format!("avg HR {}", h),
             None => "no HR".into(),
         };
+        let label = match &w.name {
+            Some(n) => format!("{} \u{2014} {}", n, w.activity_type),
+            None => w.activity_type.clone(),
+        };
         println!(
             "[{}] {} ({}, {}, {})",
-            w.start_time, w.activity_type, duration, cal, hr
+            w.start_time, label, duration, cal, hr
         );
 
         let sets = queries::query_exercise_sets(&db, &w.id)?;

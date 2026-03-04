@@ -233,10 +233,11 @@ pub fn query_stress(db: &Database, days: i32) -> Result<Vec<Stress>> {
 
 pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
     db.conn().execute(
-        "INSERT OR REPLACE INTO workouts (id, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             w.id,
+            w.name.as_deref(),
             w.start_time,
             w.duration_seconds,
             w.activity_type,
@@ -251,20 +252,21 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
 
 pub fn query_workouts(db: &Database, days: i32) -> Result<Vec<Workout>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source
+        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source
          FROM workouts WHERE start_time >= datetime('now', ?1) ORDER BY start_time DESC",
     )?;
     let modifier = format!("-{days} days");
     let rows = stmt.query_map(params![modifier], |row| {
         Ok(Workout {
             id: row.get(0)?,
-            start_time: row.get(1)?,
-            duration_seconds: row.get(2)?,
-            activity_type: row.get(3)?,
-            calories: row.get(4)?,
-            avg_hr: row.get(5)?,
-            max_hr: row.get(6)?,
-            source: row.get(7)?,
+            name: row.get(1)?,
+            start_time: row.get(2)?,
+            duration_seconds: row.get(3)?,
+            activity_type: row.get(4)?,
+            calories: row.get(5)?,
+            avg_hr: row.get(6)?,
+            max_hr: row.get(7)?,
+            source: row.get(8)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -415,6 +417,7 @@ mod tests {
         let db = test_db();
         let workout = Workout {
             id: "w-001".into(),
+            name: None,
             start_time: "2026-03-01T08:00:00".into(),
             duration_seconds: 3600,
             activity_type: "strength".into(),

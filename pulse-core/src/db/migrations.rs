@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use super::Database;
 
-const CURRENT_VERSION: i32 = 1;
+const CURRENT_VERSION: i32 = 2;
 
 pub fn run(db: &Database) -> Result<()> {
     let conn = db.conn();
@@ -21,6 +21,10 @@ pub fn run(db: &Database) -> Result<()> {
 
     if version < 1 {
         migrate_v1(db)?;
+    }
+
+    if version < 2 {
+        migrate_v2(db)?;
     }
 
     // Stamp the version after all migrations succeed.
@@ -46,6 +50,13 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+fn migrate_v2(db: &Database) -> Result<()> {
+    db.conn()
+        .execute_batch("ALTER TABLE workouts ADD COLUMN name TEXT;")
+        .context("Failed to run v2 migration")?;
     Ok(())
 }
 

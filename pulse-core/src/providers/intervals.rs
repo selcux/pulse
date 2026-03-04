@@ -20,6 +20,7 @@ const BASE_URL: &str = "https://intervals.icu/api/v1";
 #[allow(dead_code)]
 struct ApiActivity {
     id: String,
+    name: Option<String>,
     start_date_local: String,
     #[serde(default)]
     moving_time: Option<i64>,
@@ -125,6 +126,7 @@ impl IntervalsProvider {
     fn map_workout(api: &ApiActivity) -> Workout {
         Workout {
             id: api.id.clone(),
+            name: api.name.clone(),
             start_time: api.start_date_local.clone(),
             duration_seconds: api.moving_time.unwrap_or(0),
             activity_type: api.activity_type.clone().unwrap_or_default(),
@@ -135,10 +137,15 @@ impl IntervalsProvider {
         }
     }
 
-    /// Convert API exercise sets into our ExerciseSet models.
+    /// Convert API exercise sets into our ExerciseSet models, filtering out rest periods.
     fn map_exercise_sets(workout_id: &str, api_sets: &[ApiExerciseSet]) -> Vec<ExerciseSet> {
         api_sets
             .iter()
+            .filter(|s| {
+                let name = s.exercise.as_deref().unwrap_or("").trim();
+                let cat = s.category.as_deref().unwrap_or("").to_lowercase();
+                !name.is_empty() && cat != "rest"
+            })
             .enumerate()
             .map(|(i, s)| ExerciseSet {
                 id: None,
@@ -271,6 +278,7 @@ mod tests {
     fn map_workout_from_api() {
         let api = ApiActivity {
             id: "i12345".into(),
+            name: Some("Morning Strength".into()),
             start_date_local: "2024-01-15T08:30:00".into(),
             moving_time: Some(3600),
             activity_type: Some("WeightTraining".into()),
@@ -281,6 +289,7 @@ mod tests {
         };
         let w = IntervalsProvider::map_workout(&api);
         assert_eq!(w.id, "i12345");
+        assert_eq!(w.name, Some("Morning Strength".into()));
         assert_eq!(w.duration_seconds, 3600);
         assert_eq!(w.calories, Some(350));
         assert_eq!(w.avg_hr, Some(120));
@@ -310,5 +319,43 @@ mod tests {
         assert_eq!(sets[1].set_order, 2);
         assert_eq!(sets[1].weight_kg, Some(65.0));
         assert_eq!(sets[0].workout_id, "w-001");
+    }
+
+    #[test]
+    fn filter_rest_sets() {
+        let api_sets = vec![
+            ApiExerciseSet {
+                exercise: Some("Squat".into()),
+                reps: Some(5),
+                weight: Some(100.0),
+                category: Some("Legs".into()),
+            },
+            // rest set: category == "rest"
+            ApiExerciseSet {
+                exercise: None,
+                reps: None,
+                weight: None,
+                category: Some("rest".into()),
+            },
+            // rest set: empty exercise name
+            ApiExerciseSet {
+                exercise: Some("".into()),
+                reps: None,
+                weight: None,
+                category: Some("Rest".into()),
+            },
+            ApiExerciseSet {
+                exercise: Some("Deadlift".into()),
+                reps: Some(3),
+                weight: Some(120.0),
+                category: Some("Back".into()),
+            },
+        ];
+        let sets = IntervalsProvider::map_exercise_sets("w-002", &api_sets);
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[0].exercise_name, "Squat");
+        assert_eq!(sets[0].set_order, 1);
+        assert_eq!(sets[1].exercise_name, "Deadlift");
+        assert_eq!(sets[1].set_order, 2);
     }
 }
