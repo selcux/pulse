@@ -46,6 +46,16 @@ impl GarminProvider {
 
     fn map_sleep(date: NaiveDate, resp: &GarminSleepResponse, hrv_avg: Option<f64>) -> Option<Sleep> {
         let dto = resp.daily_sleep_dto.as_ref()?;
+
+        // Skip all-zero records — Garmin returns an empty DTO on days with no sleep data
+        let has_data = dto.sleep_time_in_seconds.unwrap_or(0) > 0
+            || dto.deep_sleep_seconds.unwrap_or(0) > 0
+            || dto.rem_sleep_in_seconds.unwrap_or(0) > 0
+            || dto.light_sleep_seconds.unwrap_or(0) > 0;
+        if !has_data {
+            return None;
+        }
+
         Some(Sleep {
             date: date.to_string(),
             total_seconds: dto.sleep_time_in_seconds.unwrap_or_else(|| {
@@ -83,11 +93,16 @@ impl GarminProvider {
         }
     }
 
-    fn map_recovery(date: NaiveDate, summary: &GarminDailySummaryResponse) -> Recovery {
+    fn map_recovery(
+        date: NaiveDate,
+        summary: &GarminDailySummaryResponse,
+        body_battery_charged: Option<i32>,
+        body_battery_drained: Option<i32>,
+    ) -> Recovery {
         Recovery {
             date: date.to_string(),
-            body_battery_charged: None, // Not in daily summary endpoint
-            body_battery_drained: None,
+            body_battery_charged,
+            body_battery_drained,
             body_battery_peak: summary.body_battery_highest_value,
             body_battery_low: summary.body_battery_lowest_value,
             source: "garmin".into(),
@@ -209,7 +224,20 @@ impl GarminProvider {
         queries::upsert_heart(db, &heart)?;
         count += 1;
 
-        let recovery = Self::map_recovery(date, &summary);
+        // 4. Body battery charged/drained (separate endpoint)
+        let (bb_charged, bb_drained) = match api.fetch_body_battery(date) {
+            Ok(items) => items
+                .into_iter()
+                .next()
+                .map(|item| (item.charged, item.drained))
+                .unwrap_or((None, None)),
+            Err(e) => {
+                eprintln!("[garmin] body battery fetch failed for {date}: {e:#}");
+                (None, None)
+            }
+        };
+
+        let recovery = Self::map_recovery(date, &summary, bb_charged, bb_drained);
         queries::upsert_recovery(db, &recovery)?;
         count += 1;
 
@@ -228,7 +256,10 @@ impl GarminProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::*;
+    use api::{
+    DailySleepDto, GarminBodyBatteryItem, GarminDailySummaryResponse, GarminSleepResponse,
+    SleepScoreValue, SleepScores,
+};
 
     #[test]
     fn provider_name() {
@@ -325,11 +356,39 @@ mod tests {
     fn map_recovery_from_summary() {
         let summary = test_daily_summary();
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        let recovery = GarminProvider::map_recovery(date, &summary);
+        let recovery = GarminProvider::map_recovery(date, &summary, None, None);
         assert_eq!(recovery.body_battery_peak, Some(95));
         assert_eq!(recovery.body_battery_low, Some(25));
         assert!(recovery.body_battery_charged.is_none());
         assert!(recovery.body_battery_drained.is_none());
+    }
+
+    #[test]
+    fn map_recovery_with_charged_drained() {
+        let summary = test_daily_summary();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let recovery = GarminProvider::map_recovery(date, &summary, Some(85), Some(62));
+        assert_eq!(recovery.body_battery_peak, Some(95));
+        assert_eq!(recovery.body_battery_low, Some(25));
+        assert_eq!(recovery.body_battery_charged, Some(85));
+        assert_eq!(recovery.body_battery_drained, Some(62));
+        assert_eq!(recovery.source, "garmin");
+    }
+
+    #[test]
+    fn body_battery_item_first_wins() {
+        // Simulate what sync_date does: take first item from the Vec
+        let items = vec![
+            GarminBodyBatteryItem { charged: Some(85), drained: Some(62) },
+            GarminBodyBatteryItem { charged: Some(10), drained: Some(5) },
+        ];
+        let (charged, drained) = items
+            .into_iter()
+            .next()
+            .map(|item| (item.charged, item.drained))
+            .unwrap_or((None, None));
+        assert_eq!(charged, Some(85));
+        assert_eq!(drained, Some(62));
     }
 
     #[test]

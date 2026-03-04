@@ -53,6 +53,17 @@ pub struct HrvSummary {
     pub last_night_avg: Option<f64>,
 }
 
+/// Body battery: /wellness-service/wellness/dailyBatteryReport/display/{date}
+/// Returns a list; we only care about the first (and usually only) item.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GarminBodyBatteryItem {
+    pub charged: Option<i32>,
+    pub drained: Option<i32>,
+}
+
+pub type GarminBodyBatteryResponse = Vec<GarminBodyBatteryItem>;
+
 /// Daily summary: /usersummary-service/usersummary/daily/?calendarDate={d}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +131,13 @@ impl<'a> GarminApi<'a> {
     pub fn fetch_hrv(&self, date: NaiveDate) -> Result<GarminHrvResponse> {
         let url = format!("{CONNECT_API}/hrv-service/hrv/{date}");
         self.get_json(&url, "HRV")
+    }
+
+    pub fn fetch_body_battery(&self, date: NaiveDate) -> Result<GarminBodyBatteryResponse> {
+        let url = format!(
+            "{CONNECT_API}/wellness-service/wellness/bodyBattery/reports/daily?startDate={date}&endDate={date}"
+        );
+        self.get_json(&url, "body battery")
     }
 
     pub fn fetch_daily_summary(&self, date: NaiveDate) -> Result<GarminDailySummaryResponse> {
@@ -240,6 +258,22 @@ mod tests {
         assert_eq!(resp.average_stress_level, Some(35));
         assert_eq!(resp.body_battery_highest_value, Some(95));
         assert_eq!(resp.body_battery_lowest_value, Some(25));
+    }
+
+    #[test]
+    fn deserialize_body_battery_response() {
+        let json = r#"[{"charged": 85, "drained": 62}]"#;
+        let resp: GarminBodyBatteryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.len(), 1);
+        assert_eq!(resp[0].charged, Some(85));
+        assert_eq!(resp[0].drained, Some(62));
+    }
+
+    #[test]
+    fn deserialize_body_battery_response_empty() {
+        let json = r#"[]"#;
+        let resp: GarminBodyBatteryResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.is_empty());
     }
 
     #[test]
