@@ -465,15 +465,34 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
     let scores = vitality::calculate_vitality(&db, &cfg, days)?;
+    let pace = vitality::calculate_pace(&scores);
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&scores)?);
+        let output = serde_json::json!({
+            "pace": pace,
+            "scores": scores,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
     if scores.is_empty() {
         println!("No vitality data for the last {} days. (Sleep data is required as anchor.)", days);
         return Ok(());
+    }
+
+    if let Some(ref p) = pace {
+        let (emoji, label) = match p.trend {
+            vitality::PaceTrend::Slowing => ("\u{1f7e2}", "Slowing"),
+            vitality::PaceTrend::Steady => ("\u{1f7e1}", "Steady"),
+            vitality::PaceTrend::Accelerating => ("\u{1f534}", "Accelerating"),
+        };
+        let sign = if p.vs_baseline >= 0.0 { "+" } else { "" };
+        println!(
+            "Pace: {:.2}x {} {}   7d avg: {:.1} | 30d avg: {:.1} ({}{:.1} pts)",
+            p.multiplier, emoji, label, p.seven_day_avg, p.thirty_day_avg, sign, p.vs_baseline
+        );
+        println!();
     }
 
     println!(

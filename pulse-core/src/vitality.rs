@@ -15,6 +15,46 @@ pub struct VitalityScore {
     pub stress_score: f64,   // 0-100 (weight: 20%)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaceTrend {
+    Slowing,
+    Steady,
+    Accelerating,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaceInfo {
+    pub multiplier: f64,     // 7d_avg / 30d_avg
+    pub trend: PaceTrend,
+    pub vs_baseline: f64,    // 7d_avg - 30d_avg (signed)
+    pub seven_day_avg: f64,
+    pub thirty_day_avg: f64,
+}
+
+/// Compute pace-of-aging from a slice of scored days (newest-first).
+/// Returns None if fewer than 7 days are present.
+pub fn calculate_pace(scores: &[VitalityScore]) -> Option<PaceInfo> {
+    if scores.len() < 7 {
+        return None;
+    }
+    let seven_day_avg = scores[..7].iter().map(|s| s.total_score).sum::<f64>() / 7.0;
+    let thirty_day_avg = scores.iter().map(|s| s.total_score).sum::<f64>() / scores.len() as f64;
+    if thirty_day_avg == 0.0 {
+        return None;
+    }
+    let multiplier = seven_day_avg / thirty_day_avg;
+    let vs_baseline = seven_day_avg - thirty_day_avg;
+    let trend = if multiplier >= 1.1 {
+        PaceTrend::Slowing
+    } else if multiplier >= 0.9 {
+        PaceTrend::Steady
+    } else {
+        PaceTrend::Accelerating
+    };
+    Some(PaceInfo { multiplier, trend, vs_baseline, seven_day_avg, thirty_day_avg })
+}
+
 /// Calculate vitality scores for the last N days.
 ///
 /// Sleep data acts as the anchor — a score is produced for each date that has
@@ -721,5 +761,89 @@ mod tests {
         let config = test_config();
         let scores = calculate_vitality(&db, &config, 7).unwrap();
         assert!(scores.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // calculate_pace
+    // -----------------------------------------------------------------------
+
+    fn make_score(total: f64) -> VitalityScore {
+        VitalityScore {
+            date: "2026-01-01".into(),
+            total_score: total,
+            sleep_score: 0.0,
+            recovery_score: 0.0,
+            activity_score: 0.0,
+            stress_score: 0.0,
+        }
+    }
+
+    #[test]
+    fn pace_returns_none_with_fewer_than_7_scores() {
+        let scores: Vec<VitalityScore> = (0..6).map(|_| make_score(70.0)).collect();
+        assert!(calculate_pace(&scores).is_none());
+    }
+
+    #[test]
+    fn pace_returns_some_with_7_or_more_scores() {
+        let scores: Vec<VitalityScore> = (0..7).map(|_| make_score(70.0)).collect();
+        assert!(calculate_pace(&scores).is_some());
+    }
+
+    #[test]
+    fn pace_slowing_when_recent_above_baseline() {
+        // 7 recent days at 77, 3 older days at 50 → 7d_avg=77, 30d_avg=(77*7+50*3)/10=68.9
+        let mut scores: Vec<VitalityScore> = (0..7).map(|_| make_score(77.0)).collect();
+        scores.extend((0..3).map(|_| make_score(50.0)));
+        let pace = calculate_pace(&scores).unwrap();
+        assert!(
+            matches!(pace.trend, PaceTrend::Slowing),
+            "Expected Slowing, multiplier={:.3}",
+            pace.multiplier
+        );
+        assert!(pace.multiplier >= 1.1);
+        assert!(pace.vs_baseline > 0.0, "vs_baseline should be positive");
+    }
+
+    #[test]
+    fn pace_accelerating_when_recent_below_baseline() {
+        // 7 recent days at 50, 3 older days at 80
+        let mut scores: Vec<VitalityScore> = (0..7).map(|_| make_score(50.0)).collect();
+        scores.extend((0..3).map(|_| make_score(80.0)));
+        let pace = calculate_pace(&scores).unwrap();
+        assert!(
+            matches!(pace.trend, PaceTrend::Accelerating),
+            "Expected Accelerating, multiplier={:.3}",
+            pace.multiplier
+        );
+        assert!(pace.multiplier < 0.9);
+        assert!(pace.vs_baseline < 0.0, "vs_baseline should be negative");
+    }
+
+    #[test]
+    fn pace_steady_when_near_baseline() {
+        // All 10 days at 70 → multiplier = 1.0
+        let scores: Vec<VitalityScore> = (0..10).map(|_| make_score(70.0)).collect();
+        let pace = calculate_pace(&scores).unwrap();
+        assert!(
+            matches!(pace.trend, PaceTrend::Steady),
+            "Expected Steady, multiplier={:.3}",
+            pace.multiplier
+        );
+        assert!((pace.multiplier - 1.0).abs() < f64::EPSILON);
+        assert!(pace.vs_baseline.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn pace_vs_baseline_is_signed_delta() {
+        // 7 recent = 75, 3 older = 60 → 7d_avg=75, 30d_avg=(75*7+60*3)/10=70.5
+        let mut scores: Vec<VitalityScore> = (0..7).map(|_| make_score(75.0)).collect();
+        scores.extend((0..3).map(|_| make_score(60.0)));
+        let pace = calculate_pace(&scores).unwrap();
+        let expected_7d = 75.0_f64;
+        let expected_30d = (75.0 * 7.0 + 60.0 * 3.0) / 10.0;
+        assert!((pace.seven_day_avg - expected_7d).abs() < 0.01);
+        assert!((pace.thirty_day_avg - expected_30d).abs() < 0.01);
+        assert!((pace.vs_baseline - (expected_7d - expected_30d)).abs() < 0.01);
     }
 }
