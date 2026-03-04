@@ -17,3 +17,7 @@ anyhow = "1"
 serde_json = "1"
 toml = "1"
 rpassword = "7"
+
+[[bin]]
+name = "pulse"
+path = "src/main.rs"
