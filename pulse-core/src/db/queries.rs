@@ -1,3 +1,9 @@
+//! Database query functions for all health metrics.
+//!
+//! All functions take a [`Database`] reference. Date-range queries use a
+//! `days` parameter: `query_sleep(db, 7)` returns records from the last 7 days
+//! ordered newest-first.
+
 use anyhow::Result;
 use rusqlite::params;
 use rusqlite::OptionalExtension;
@@ -9,6 +15,7 @@ use crate::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Worko
 // Sleep
 // ---------------------------------------------------------------------------
 
+/// Insert or replace a sleep record for `s.date`.
 pub fn upsert_sleep(db: &Database, s: &Sleep) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO sleep (date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, source)
@@ -28,6 +35,7 @@ pub fn upsert_sleep(db: &Database, s: &Sleep) -> Result<()> {
     Ok(())
 }
 
+/// Return sleep records from the last `days` days, newest-first.
 pub fn query_sleep(db: &Database, days: i32) -> Result<Vec<Sleep>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, source
@@ -50,6 +58,7 @@ pub fn query_sleep(db: &Database, days: i32) -> Result<Vec<Sleep>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Return the sleep record for a specific `date` (`YYYY-MM-DD`), or `None`.
 pub fn get_sleep(db: &Database, date: &str) -> Result<Option<Sleep>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, source
@@ -77,6 +86,7 @@ pub fn get_sleep(db: &Database, date: &str) -> Result<Option<Sleep>> {
 // Heart
 // ---------------------------------------------------------------------------
 
+/// Insert or replace a heart-rate record for `h.date`.
 pub fn upsert_heart(db: &Database, h: &Heart) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO heart (date, resting_hr, max_hr, min_hr, hrv_avg, vo2_max, source)
@@ -86,6 +96,7 @@ pub fn upsert_heart(db: &Database, h: &Heart) -> Result<()> {
     Ok(())
 }
 
+/// Return heart records from the last `days` days, newest-first.
 pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, resting_hr, max_hr, min_hr, hrv_avg, vo2_max, source
@@ -110,11 +121,15 @@ pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
 // Heart baselines (30-day averages)
 // ---------------------------------------------------------------------------
 
+/// 30-day rolling averages used as personal baselines for recovery scoring.
 pub struct HeartBaselines {
+    /// 30-day average resting heart rate (bpm).
     pub rhr_avg: Option<f64>,
+    /// 30-day average HRV (ms).
     pub hrv_avg: Option<f64>,
 }
 
+/// Compute 30-day rolling averages for resting HR and HRV from stored data.
 pub fn compute_heart_baselines(db: &Database) -> Result<HeartBaselines> {
     let mut stmt = db.conn().prepare(
         "SELECT AVG(resting_hr), AVG(hrv_avg) FROM heart WHERE date >= date('now', '-30 days')",
@@ -128,6 +143,7 @@ pub fn compute_heart_baselines(db: &Database) -> Result<HeartBaselines> {
     Ok(result)
 }
 
+/// Compute the 30-day average VO2 Max from stored heart data, or `None` if unavailable.
 pub fn compute_vo2_baseline(db: &Database) -> Result<Option<f64>> {
     let mut stmt = db.conn().prepare(
         "SELECT AVG(vo2_max) FROM heart WHERE date >= date('now', '-30 days') AND vo2_max IS NOT NULL",
@@ -140,6 +156,7 @@ pub fn compute_vo2_baseline(db: &Database) -> Result<Option<f64>> {
 // Recovery
 // ---------------------------------------------------------------------------
 
+/// Insert or replace a recovery record for `r.date`.
 pub fn upsert_recovery(db: &Database, r: &Recovery) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO recovery (date, body_battery_charged, body_battery_drained, body_battery_peak, body_battery_low, source)
@@ -156,6 +173,7 @@ pub fn upsert_recovery(db: &Database, r: &Recovery) -> Result<()> {
     Ok(())
 }
 
+/// Return recovery records from the last `days` days, newest-first.
 pub fn query_recovery(db: &Database, days: i32) -> Result<Vec<Recovery>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, body_battery_charged, body_battery_drained, body_battery_peak, body_battery_low, source
@@ -179,6 +197,7 @@ pub fn query_recovery(db: &Database, days: i32) -> Result<Vec<Recovery>> {
 // Activity
 // ---------------------------------------------------------------------------
 
+/// Insert or replace an activity record for `a.date`.
 pub fn upsert_activity(db: &Database, a: &Activity) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO activity (date, steps, active_minutes, floors, source)
@@ -188,6 +207,7 @@ pub fn upsert_activity(db: &Database, a: &Activity) -> Result<()> {
     Ok(())
 }
 
+/// Return activity records from the last `days` days, newest-first.
 pub fn query_activity(db: &Database, days: i32) -> Result<Vec<Activity>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, steps, active_minutes, floors, source
@@ -210,6 +230,7 @@ pub fn query_activity(db: &Database, days: i32) -> Result<Vec<Activity>> {
 // Stress
 // ---------------------------------------------------------------------------
 
+/// Insert or replace a stress record for `s.date`.
 pub fn upsert_stress(db: &Database, s: &Stress) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO stress (date, avg_stress, max_stress, source)
@@ -219,6 +240,7 @@ pub fn upsert_stress(db: &Database, s: &Stress) -> Result<()> {
     Ok(())
 }
 
+/// Return stress records from the last `days` days, newest-first.
 pub fn query_stress(db: &Database, days: i32) -> Result<Vec<Stress>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, avg_stress, max_stress, source
@@ -240,6 +262,7 @@ pub fn query_stress(db: &Database, days: i32) -> Result<Vec<Stress>> {
 // Workouts
 // ---------------------------------------------------------------------------
 
+/// Insert or replace a workout record for `w.id`.
 pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source)
@@ -259,6 +282,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
     Ok(())
 }
 
+/// Return workouts with `start_time` in the last `days` days, newest-first.
 pub fn query_workouts(db: &Database, days: i32) -> Result<Vec<Workout>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source
@@ -285,6 +309,7 @@ pub fn query_workouts(db: &Database, days: i32) -> Result<Vec<Workout>> {
 // Exercise Sets
 // ---------------------------------------------------------------------------
 
+/// Insert a new exercise set and return the assigned row ID.
 pub fn insert_exercise_set(db: &Database, s: &ExerciseSet) -> Result<i64> {
     db.conn().execute(
         "INSERT INTO exercise_sets (workout_id, set_order, exercise_category, exercise_name, repetitions, weight_kg)
@@ -301,6 +326,7 @@ pub fn insert_exercise_set(db: &Database, s: &ExerciseSet) -> Result<i64> {
     Ok(db.conn().last_insert_rowid())
 }
 
+/// Return all exercise sets for a workout, ordered by `set_order` ascending.
 pub fn query_exercise_sets(db: &Database, workout_id: &str) -> Result<Vec<ExerciseSet>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, workout_id, set_order, exercise_category, exercise_name, repetitions, weight_kg
@@ -320,6 +346,7 @@ pub fn query_exercise_sets(db: &Database, workout_id: &str) -> Result<Vec<Exerci
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Delete all exercise sets belonging to `workout_id`.
 pub fn delete_exercise_sets_for_workout(db: &Database, workout_id: &str) -> Result<()> {
     db.conn().execute(
         "DELETE FROM exercise_sets WHERE workout_id = ?1",
@@ -332,6 +359,7 @@ pub fn delete_exercise_sets_for_workout(db: &Database, workout_id: &str) -> Resu
 // Sync State
 // ---------------------------------------------------------------------------
 
+/// Retrieve a named sync-state value, or `None` if the key does not exist.
 pub fn get_sync_state(db: &Database, key: &str) -> Result<Option<String>> {
     let mut stmt = db
         .conn()
@@ -342,6 +370,7 @@ pub fn get_sync_state(db: &Database, key: &str) -> Result<Option<String>> {
     Ok(result.flatten())
 }
 
+/// Persist a named sync-state value (insert or replace).
 pub fn set_sync_state(db: &Database, key: &str, value: &str) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?1, ?2, datetime('now'))",
