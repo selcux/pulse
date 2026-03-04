@@ -20,6 +20,7 @@ pub struct GarminSleepResponse {
 pub struct DailySleepDto {
     pub sleep_time_in_seconds: Option<i64>,
     pub deep_sleep_seconds: Option<i64>,
+    #[serde(rename = "remSleepSeconds")]
     pub rem_sleep_in_seconds: Option<i64>,
     pub light_sleep_seconds: Option<i64>,
     pub awake_sleep_seconds: Option<i64>,
@@ -158,7 +159,7 @@ mod tests {
             "dailySleepDTO": {
                 "sleepTimeInSeconds": 28800,
                 "deepSleepSeconds": 7200,
-                "remSleepInSeconds": 5400,
+                "remSleepSeconds": 5400,
                 "lightSleepSeconds": 14400,
                 "awakeSleepSeconds": 1800,
                 "averageSpO2Value": 96.0,

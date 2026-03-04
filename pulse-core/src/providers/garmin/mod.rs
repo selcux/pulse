@@ -48,7 +48,12 @@ impl GarminProvider {
         let dto = resp.daily_sleep_dto.as_ref()?;
         Some(Sleep {
             date: date.to_string(),
-            total_seconds: dto.sleep_time_in_seconds.unwrap_or(0),
+            total_seconds: dto.sleep_time_in_seconds.unwrap_or_else(|| {
+                dto.deep_sleep_seconds.unwrap_or(0)
+                    + dto.rem_sleep_in_seconds.unwrap_or(0)
+                    + dto.light_sleep_seconds.unwrap_or(0)
+                    + dto.awake_sleep_seconds.unwrap_or(0)
+            }),
             deep_seconds: dto.deep_sleep_seconds.unwrap_or(0),
             rem_seconds: dto.rem_sleep_in_seconds.unwrap_or(0),
             light_seconds: dto.light_sleep_seconds.unwrap_or(0),
@@ -267,6 +272,25 @@ mod tests {
         assert_eq!(sleep.sleep_score, Some(82));
         assert_eq!(sleep.hrv_ms, Some(45.0));
         assert_eq!(sleep.source, "garmin");
+    }
+
+    #[test]
+    fn map_sleep_total_seconds_computed_from_phases_when_missing() {
+        let resp = GarminSleepResponse {
+            daily_sleep_dto: Some(DailySleepDto {
+                sleep_time_in_seconds: None, // Garmin omits this sometimes
+                deep_sleep_seconds: Some(7200),
+                rem_sleep_in_seconds: Some(5400),
+                light_sleep_seconds: Some(14400),
+                awake_sleep_seconds: Some(1800),
+                average_sp_o2_value: None,
+                sleep_scores: None,
+            }),
+        };
+        let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let sleep = GarminProvider::map_sleep(date, &resp, None).unwrap();
+        assert_eq!(sleep.total_seconds, 7200 + 5400 + 14400 + 1800); // 28800
+        assert_eq!(sleep.rem_seconds, 5400);
     }
 
     #[test]
