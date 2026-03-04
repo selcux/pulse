@@ -79,16 +79,16 @@ pub fn get_sleep(db: &Database, date: &str) -> Result<Option<Sleep>> {
 
 pub fn upsert_heart(db: &Database, h: &Heart) -> Result<()> {
     db.conn().execute(
-        "INSERT OR REPLACE INTO heart (date, resting_hr, max_hr, min_hr, hrv_avg, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![h.date, h.resting_hr, h.max_hr, h.min_hr, h.hrv_avg, h.source],
+        "INSERT OR REPLACE INTO heart (date, resting_hr, max_hr, min_hr, hrv_avg, vo2_max, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![h.date, h.resting_hr, h.max_hr, h.min_hr, h.hrv_avg, h.vo2_max, h.source],
     )?;
     Ok(())
 }
 
 pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
     let mut stmt = db.conn().prepare(
-        "SELECT date, resting_hr, max_hr, min_hr, hrv_avg, source
+        "SELECT date, resting_hr, max_hr, min_hr, hrv_avg, vo2_max, source
          FROM heart WHERE date >= date('now', ?1) ORDER BY date DESC",
     )?;
     let modifier = format!("-{days} days");
@@ -99,7 +99,8 @@ pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
             max_hr: row.get(2)?,
             min_hr: row.get(3)?,
             hrv_avg: row.get(4)?,
-            source: row.get(5)?,
+            vo2_max: row.get(5)?,
+            source: row.get(6)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -510,5 +511,23 @@ mod tests {
     fn get_sleep_returns_none_for_missing_date() {
         let db = test_db();
         assert!(get_sleep(&db, "9999-12-31").unwrap().is_none());
+    }
+
+    #[test]
+    fn heart_upsert_and_query_with_vo2_max() {
+        let db = Database::open_memory().unwrap();
+        let today = chrono::Local::now().date_naive().to_string();
+        upsert_heart(&db, &Heart {
+            date: today.clone(),
+            resting_hr: Some(58),
+            max_hr: None,
+            min_hr: None,
+            hrv_avg: Some(50.0),
+            vo2_max: Some(48.5),
+            source: "garmin".into(),
+        }).unwrap();
+        let results = query_heart(&db, 7).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!((results[0].vo2_max.unwrap() - 48.5).abs() < 0.01);
     }
 }

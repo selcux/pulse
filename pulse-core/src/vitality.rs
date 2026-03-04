@@ -314,6 +314,7 @@ mod tests {
             max_hr: None,
             min_hr: None,
             hrv_avg: Some(45.0), // 45/50*100 = 90
+            vo2_max: None,
             source: "garmin".into(),
         };
         let score = calculate_recovery_score(Some(&recovery), Some(&heart), 60.0, 50.0);
@@ -358,6 +359,7 @@ mod tests {
             max_hr: None,
             min_hr: None,
             hrv_avg: None,
+            vo2_max: None,
             source: "garmin".into(),
         };
         let score = calculate_recovery_score(None, Some(&heart), 55.0, 50.0);
@@ -376,6 +378,7 @@ mod tests {
             max_hr: None,
             min_hr: None,
             hrv_avg: None,
+            vo2_max: None,
             source: "garmin".into(),
         };
         let score = calculate_recovery_score(None, Some(&heart), 60.0, 50.0);
@@ -503,6 +506,7 @@ mod tests {
                 max_hr: None,
                 min_hr: None,
                 hrv_avg: Some(55.0),
+                vo2_max: None,
                 source: "garmin".into(),
             },
         )
@@ -554,6 +558,7 @@ mod tests {
                 max_hr: None,
                 min_hr: None,
                 hrv_avg: Some(56.0), // below config baseline of 70
+                vo2_max: None,
                 source: "garmin".into(),
             },
         )
@@ -600,6 +605,7 @@ mod tests {
                 max_hr: None,
                 min_hr: None,
                 hrv_avg: Some(50.0),
+                vo2_max: None,
                 source: "garmin".into(),
             },
         )
@@ -669,6 +675,7 @@ mod tests {
                 max_hr: Some(165),
                 min_hr: Some(48),
                 hrv_avg: Some(60.0), // 60/60*100 = 100
+                vo2_max: None,
                 source: "garmin".into(),
             },
         )

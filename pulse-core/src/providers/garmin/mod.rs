@@ -89,6 +89,7 @@ impl GarminProvider {
             max_hr: summary.max_heart_rate,
             min_hr: summary.min_heart_rate,
             hrv_avg,
+            vo2_max: None, // populated in Task 2 once vo2_max_value is on GarminDailySummaryResponse
             source: "garmin".into(),
         }
     }

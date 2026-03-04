@@ -7,5 +7,6 @@ pub struct Heart {
     pub max_hr: Option<i32>,
     pub min_hr: Option<i32>,
     pub hrv_avg: Option<f64>,
+    pub vo2_max: Option<f64>,
     pub source: String,
 }
