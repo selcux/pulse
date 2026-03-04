@@ -128,6 +128,14 @@ pub fn compute_heart_baselines(db: &Database) -> Result<HeartBaselines> {
     Ok(result)
 }
 
+pub fn compute_vo2_baseline(db: &Database) -> Result<Option<f64>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT AVG(vo2_max) FROM heart WHERE date >= date('now', '-30 days') AND vo2_max IS NOT NULL",
+    )?;
+    let result: Option<f64> = stmt.query_row([], |row| row.get(0))?;
+    Ok(result)
+}
+
 // ---------------------------------------------------------------------------
 // Recovery
 // ---------------------------------------------------------------------------
@@ -511,6 +519,30 @@ mod tests {
     fn get_sleep_returns_none_for_missing_date() {
         let db = test_db();
         assert!(get_sleep(&db, "9999-12-31").unwrap().is_none());
+    }
+
+    #[test]
+    fn compute_vo2_baseline_returns_avg() {
+        let db = Database::open_memory().unwrap();
+        let today = chrono::Local::now().date_naive().to_string();
+        upsert_heart(&db, &Heart {
+            date: today.clone(),
+            resting_hr: None,
+            max_hr: None,
+            min_hr: None,
+            hrv_avg: None,
+            vo2_max: Some(50.0),
+            source: "garmin".into(),
+        }).unwrap();
+        let baseline = compute_vo2_baseline(&db).unwrap();
+        assert!((baseline.unwrap() - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_vo2_baseline_returns_none_when_no_data() {
+        let db = Database::open_memory().unwrap();
+        let baseline = compute_vo2_baseline(&db).unwrap();
+        assert!(baseline.is_none());
     }
 
     #[test]
