@@ -1,43 +1,67 @@
+//! Configuration loading and defaults for `~/.pulse/config.toml`.
+//!
+//! On first run, [`load_config`] creates a default config file. Edit it
+//! to enable providers, set personal baselines, and tune scoring targets.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Top-level configuration, serialised as `~/.pulse/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PulseConfig {
     pub user: UserConfig,
     pub providers: ProvidersConfig,
 }
 
+/// Personal targets and optional manual baselines used for vitality scoring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
+    /// Your age in years — currently reserved for future norm lookups.
     pub age: Option<i32>,
+    /// Target sleep duration in hours. Defaults to `8.0`.
     pub sleep_target_hours: Option<f64>,
+    /// Daily step target. Defaults to `10_000`.
     pub steps_target: Option<i32>,
-    // TODO: Remove rhr_baseline and hrv_baseline once Garmin sync is live —
-    // auto-compute from 30-day DB averages only, no manual config needed.
+    /// Manual resting-heart-rate baseline (bpm). If unset, the 30-day DB
+    /// average is used automatically once enough data is synced.
     pub rhr_baseline: Option<f64>,
+    /// Manual HRV baseline (ms). Same auto-compute fallback as `rhr_baseline`.
     pub hrv_baseline: Option<f64>,
+    /// Manual VO2 Max fallback (ml/kg/min). Used when the device does not
+    /// report VO2 Max on a given day.
     pub vo2_max: Option<f64>,
+    /// Lean body mass in kg. Enables FFMI-based fitness scoring when combined
+    /// with `height_cm`.
     pub lean_body_mass_kg: Option<f64>,
+    /// Height in centimetres. Used with `lean_body_mass_kg` for FFMI scoring.
     pub height_cm: Option<f64>,
 }
 
+/// Enabled data-source providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidersConfig {
     pub garmin: Option<GarminConfig>,
     pub intervals: Option<IntervalsConfig>,
 }
 
+/// Garmin Connect provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GarminConfig {
+    /// Set to `true` to include Garmin in sync operations.
     pub enabled: bool,
+    /// Garmin Connect username/email. If omitted, `pulse garmin-login` will prompt.
     pub username: Option<String>,
 }
 
+/// Intervals.icu provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntervalsConfig {
+    /// Set to `true` to include Intervals.icu in sync operations.
     pub enabled: bool,
+    /// Intervals.icu API key (found in Settings → API).
     pub api_key: String,
+    /// Your Intervals.icu athlete ID (the `iXXXXXX` string in your profile URL).
     pub athlete_id: String,
 }
 
