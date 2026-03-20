@@ -2,6 +2,9 @@
 .worktrees/
 garth_temp/
 
+# IDE directories and files
+.idea/
+
 # Private internal docs
 docs/
 AGENTS.md
