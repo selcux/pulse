@@ -496,7 +496,7 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
         };
         let sign = if p.vs_baseline >= 0.0 { "+" } else { "" };
         println!(
-            "Pace: {:.2}x {} {}   7d avg: {:.1} | 30d avg: {:.1} ({}{:.1} pts)",
+            "Pace of aging: {:.2}x {} {}   7d avg: {:.1} | 30d avg: {:.1} ({}{:.1} pts)",
             p.multiplier, emoji, label, p.seven_day_avg, p.thirty_day_avg, sign, p.vs_baseline
         );
         println!();
