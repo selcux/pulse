@@ -117,11 +117,7 @@ pub fn login(
             Ok(LoginResult::MfaRequired)
         }
     } else {
-        // Debug: Show what we got in the response
-        eprintln!("DEBUG: Unexpected title: {}", title);
-        eprintln!("DEBUG: Response preview (first 2000 chars):");
-        eprintln!("{}", &post_resp.chars().take(2000).collect::<String>());
-        bail!("Login failed. Check your email and password.")
+        bail!("Login failed (unexpected page title: {title:?}). Check your email and password.")
     }
 }
 
