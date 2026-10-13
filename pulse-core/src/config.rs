@@ -107,11 +107,9 @@ pub fn load_config() -> Result<PulseConfig> {
         write_default_config().context("Failed to write default config")?;
     }
 
-    let contents =
-        std::fs::read_to_string(&config_path).context("Failed to read config.toml")?;
+    let contents = std::fs::read_to_string(&config_path).context("Failed to read config.toml")?;
 
-    let config: PulseConfig =
-        toml::from_str(&contents).context("Failed to parse config.toml")?;
+    let config: PulseConfig = toml::from_str(&contents).context("Failed to parse config.toml")?;
 
     Ok(config)
 }

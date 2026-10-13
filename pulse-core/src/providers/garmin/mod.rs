@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 
-use crate::db::queries;
 use crate::db::Database;
+use crate::db::queries;
 use crate::models::{Activity, Heart, Recovery, Sleep, Stress};
 use crate::providers::{DateRange, MetricType, Provider, SyncReport};
 
@@ -44,7 +44,11 @@ impl GarminProvider {
     // Mapping helpers
     // -----------------------------------------------------------------------
 
-    fn map_sleep(date: NaiveDate, resp: &GarminSleepResponse, hrv_avg: Option<f64>) -> Option<Sleep> {
+    fn map_sleep(
+        date: NaiveDate,
+        resp: &GarminSleepResponse,
+        hrv_avg: Option<f64>,
+    ) -> Option<Sleep> {
         let dto = resp.daily_sleep_dto.as_ref()?;
 
         // Skip all-zero records — Garmin returns an empty DTO on days with no sleep data
@@ -148,9 +152,7 @@ impl Provider for GarminProvider {
 
     fn sync(&self, db: &Database, range: &DateRange) -> Result<SyncReport> {
         if !tokens::tokens_exist() {
-            anyhow::bail!(
-                "Garmin tokens not found. Run `pulse garmin-login` first."
-            );
+            anyhow::bail!("Garmin tokens not found. Run `pulse garmin-login` first.");
         }
 
         let access_token = auth::ensure_valid_token(&self.client)
@@ -205,9 +207,7 @@ impl GarminProvider {
 
         // 1. HRV (separate endpoint) — fetched first so sleep can include it
         let hrv_avg = match api.fetch_hrv(date) {
-            Ok(hrv_resp) => hrv_resp
-                .hrv_summary
-                .and_then(|s| s.last_night_avg),
+            Ok(hrv_resp) => hrv_resp.hrv_summary.and_then(|s| s.last_night_avg),
             Err(_) => None, // HRV often missing, don't fail the whole date
         };
 
@@ -258,9 +258,9 @@ impl GarminProvider {
 mod tests {
     use super::*;
     use api::{
-    DailySleepDto, GarminBodyBatteryItem, GarminDailySummaryResponse, GarminSleepResponse,
-    SleepScoreValue, SleepScores,
-};
+        DailySleepDto, GarminBodyBatteryItem, GarminDailySummaryResponse, GarminSleepResponse,
+        SleepScoreValue, SleepScores,
+    };
 
     #[test]
     fn provider_name() {
@@ -380,8 +380,14 @@ mod tests {
     fn body_battery_item_first_wins() {
         // Simulate what sync_date does: take first item from the Vec
         let items = vec![
-            GarminBodyBatteryItem { charged: Some(85), drained: Some(62) },
-            GarminBodyBatteryItem { charged: Some(10), drained: Some(5) },
+            GarminBodyBatteryItem {
+                charged: Some(85),
+                drained: Some(62),
+            },
+            GarminBodyBatteryItem {
+                charged: Some(10),
+                drained: Some(5),
+            },
         ];
         let (charged, drained) = items
             .into_iter()

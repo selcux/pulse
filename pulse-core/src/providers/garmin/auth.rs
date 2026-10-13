@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use hmac::{Hmac, KeyInit, Mac};
 use rand::RngExt;
@@ -10,7 +10,7 @@ use sha1::Sha1;
 use url::form_urlencoded;
 
 use super::tokens::{
-    load_oauth1, load_oauth2, save_oauth1, save_oauth2, OAuthConsumer, OAuth1Token, OAuth2Token,
+    OAuth1Token, OAuth2Token, OAuthConsumer, load_oauth1, load_oauth2, save_oauth1, save_oauth2,
 };
 
 type HmacSha1 = Hmac<Sha1>;
@@ -101,18 +101,17 @@ pub fn login(
 
     // Step 5: Check response title to determine next step
     let title = extract_title(&post_resp).unwrap_or_default();
-    
+
     if title == "Success" {
         // Login successful, extract ticket and complete
-        let ticket = extract_ticket(&post_resp)
-            .context("Login succeeded but couldn't extract ticket")?;
+        let ticket =
+            extract_ticket(&post_resp).context("Login succeeded but couldn't extract ticket")?;
         finish_login(client, &consumer, &ticket)
     } else if title.contains("MFA") {
         // MFA required
         if let Some(code) = mfa_code {
             let mfa_resp = submit_mfa(client, &signin_params, code, &post_resp, &signin_final_url)?;
-            let ticket = extract_ticket(&mfa_resp)
-                .context("MFA code rejected or expired")?;
+            let ticket = extract_ticket(&mfa_resp).context("MFA code rejected or expired")?;
             finish_login(client, &consumer, &ticket)
         } else {
             Ok(LoginResult::MfaRequired)
@@ -121,10 +120,7 @@ pub fn login(
         // Debug: Show what we got in the response
         eprintln!("DEBUG: Unexpected title: {}", title);
         eprintln!("DEBUG: Response preview (first 2000 chars):");
-        eprintln!(
-            "{}",
-            &post_resp.chars().take(2000).collect::<String>()
-        );
+        eprintln!("{}", &post_resp.chars().take(2000).collect::<String>());
         bail!("Login failed. Check your email and password.")
     }
 }
@@ -159,7 +155,6 @@ fn fetch_consumer(client: &reqwest::blocking::Client) -> Result<OAuthConsumer> {
         .context("Failed to parse OAuth consumer JSON")
 }
 
-
 fn extract_csrf(html: &str) -> Result<String> {
     let re = Regex::new(r#"name="_csrf"\s+value="([^"]+)""#)?;
     let caps = re
@@ -178,9 +173,9 @@ fn extract_title(html: &str) -> Result<String> {
 
 fn extract_ticket(html: &str) -> Result<String> {
     let re = Regex::new(r#"embed\?ticket=([^"]+)"#)?;
-    let caps = re.captures(html).context(
-        "Could not find ticket in response. Check your username/password.",
-    )?;
+    let caps = re
+        .captures(html)
+        .context("Could not find ticket in response. Check your username/password.")?;
     Ok(caps[1].to_string())
 }
 
@@ -237,10 +232,7 @@ fn exchange_ticket(
     );
 
     let auth_header = build_oauth1_header(
-        "GET",
-        &url,
-        consumer,
-        None, // no token yet
+        "GET", &url, consumer, None, // no token yet
         None,
     );
 
@@ -303,7 +295,9 @@ fn exchange_oauth1_to_oauth2(
         );
     }
 
-    let mut token: OAuth2Token = resp.json().context("Failed to parse OAuth2 token response")?;
+    let mut token: OAuth2Token = resp
+        .json()
+        .context("Failed to parse OAuth2 token response")?;
 
     // Garmin returns expires_in but not always expires_at — compute if missing/zero
     let now = chrono::Utc::now().timestamp();
@@ -350,7 +344,12 @@ fn build_oauth1_header(
 
     // Parse URL to separate base URL and query params
     let parsed = url::Url::parse(url).expect("Invalid URL for OAuth1 signing");
-    let base_url = format!("{}://{}{}", parsed.scheme(), parsed.host_str().unwrap(), parsed.path());
+    let base_url = format!(
+        "{}://{}{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap(),
+        parsed.path()
+    );
 
     // Collect ALL params (oauth + query string) for base string
     let mut all_params: BTreeMap<String, String> = oauth_params
@@ -392,7 +391,10 @@ fn build_oauth1_header(
         .iter()
         .map(|(k, v)| format!("{}=\"{}\"", k, percent_encode(v)))
         .collect();
-    header_parts.push(format!("oauth_signature=\"{}\"", percent_encode(&signature)));
+    header_parts.push(format!(
+        "oauth_signature=\"{}\"",
+        percent_encode(&signature)
+    ));
 
     format!("OAuth {}", header_parts.join(", "))
 }
@@ -446,7 +448,10 @@ mod tests {
 
     #[test]
     fn percent_encode_slash_and_colon() {
-        assert_eq!(percent_encode("https://example.com"), "https%3A%2F%2Fexample.com");
+        assert_eq!(
+            percent_encode("https://example.com"),
+            "https%3A%2F%2Fexample.com"
+        );
     }
 
     #[test]

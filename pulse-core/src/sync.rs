@@ -93,9 +93,7 @@ fn build_providers(config: &PulseConfig) -> Vec<Box<dyn Provider>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        GarminConfig, IntervalsConfig, ProvidersConfig, PulseConfig, UserConfig,
-    };
+    use crate::config::{GarminConfig, IntervalsConfig, ProvidersConfig, PulseConfig, UserConfig};
 
     fn test_config(garmin_enabled: bool, intervals: Option<IntervalsConfig>) -> PulseConfig {
         PulseConfig {

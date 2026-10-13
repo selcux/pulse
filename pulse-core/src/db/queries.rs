@@ -5,8 +5,8 @@
 //! ordered newest-first.
 
 use anyhow::Result;
-use rusqlite::params;
 use rusqlite::OptionalExtension;
+use rusqlite::params;
 
 use super::Database;
 use crate::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Workout};
@@ -91,7 +91,15 @@ pub fn upsert_heart(db: &Database, h: &Heart) -> Result<()> {
     db.conn().execute(
         "INSERT OR REPLACE INTO heart (date, resting_hr, max_hr, min_hr, hrv_avg, vo2_max, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![h.date, h.resting_hr, h.max_hr, h.min_hr, h.hrv_avg, h.vo2_max, h.source],
+        params![
+            h.date,
+            h.resting_hr,
+            h.max_hr,
+            h.min_hr,
+            h.hrv_avg,
+            h.vo2_max,
+            h.source
+        ],
     )?;
     Ok(())
 }
@@ -554,15 +562,19 @@ mod tests {
     fn compute_vo2_baseline_returns_avg() {
         let db = Database::open_memory().unwrap();
         let today = chrono::Local::now().date_naive().to_string();
-        upsert_heart(&db, &Heart {
-            date: today.clone(),
-            resting_hr: None,
-            max_hr: None,
-            min_hr: None,
-            hrv_avg: None,
-            vo2_max: Some(50.0),
-            source: "garmin".into(),
-        }).unwrap();
+        upsert_heart(
+            &db,
+            &Heart {
+                date: today.clone(),
+                resting_hr: None,
+                max_hr: None,
+                min_hr: None,
+                hrv_avg: None,
+                vo2_max: Some(50.0),
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
         let baseline = compute_vo2_baseline(&db).unwrap();
         assert!((baseline.unwrap() - 50.0).abs() < 0.01);
     }
@@ -578,15 +590,19 @@ mod tests {
     fn heart_upsert_and_query_with_vo2_max() {
         let db = Database::open_memory().unwrap();
         let today = chrono::Local::now().date_naive().to_string();
-        upsert_heart(&db, &Heart {
-            date: today.clone(),
-            resting_hr: Some(58),
-            max_hr: None,
-            min_hr: None,
-            hrv_avg: Some(50.0),
-            vo2_max: Some(48.5),
-            source: "garmin".into(),
-        }).unwrap();
+        upsert_heart(
+            &db,
+            &Heart {
+                date: today.clone(),
+                resting_hr: Some(58),
+                max_hr: None,
+                min_hr: None,
+                hrv_avg: Some(50.0),
+                vo2_max: Some(48.5),
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
         let results = query_heart(&db, 7).unwrap();
         assert_eq!(results.len(), 1);
         assert!((results[0].vo2_max.unwrap() - 48.5).abs() < 0.01);

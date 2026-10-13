@@ -3,8 +3,8 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::config::IntervalsConfig;
-use crate::db::queries;
 use crate::db::Database;
+use crate::db::queries;
 use crate::models::{ExerciseSet, Workout};
 use crate::providers::garmin::{api::GarminApi, auth, tokens};
 use crate::providers::{DateRange, MetricType, Provider, SyncReport};
@@ -48,7 +48,9 @@ fn format_garmin_name(s: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
             }
         })
         .collect::<Vec<_>>()
@@ -307,12 +309,21 @@ mod tests {
 
     #[test]
     fn format_garmin_name_converts_screaming_snake_case() {
-        assert_eq!(format_garmin_name("CABLE_EXTERNAL_ROTATION"), "Cable External Rotation");
-        assert_eq!(format_garmin_name("SHOULDER_STABILITY"), "Shoulder Stability");
+        assert_eq!(
+            format_garmin_name("CABLE_EXTERNAL_ROTATION"),
+            "Cable External Rotation"
+        );
+        assert_eq!(
+            format_garmin_name("SHOULDER_STABILITY"),
+            "Shoulder Stability"
+        );
         assert_eq!(format_garmin_name("BENCH_PRESS"), "Bench Press");
         assert_eq!(format_garmin_name("SQUAT"), "Squat");
         // Leading underscore (Garmin sometimes prefixes names with _)
-        assert_eq!(format_garmin_name("_90_DEGREE_CABLE_EXTERNAL_ROTATION"), "90 Degree Cable External Rotation");
+        assert_eq!(
+            format_garmin_name("_90_DEGREE_CABLE_EXTERNAL_ROTATION"),
+            "90 Degree Cable External Rotation"
+        );
     }
 
     #[test]

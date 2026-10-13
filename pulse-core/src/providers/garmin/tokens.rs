@@ -96,8 +96,10 @@ pub fn save_oauth1(token: &OAuth1Token) -> Result<()> {
 /// Load OAuth1 token from disk.
 pub fn load_oauth1() -> Result<OAuth1Token> {
     let path = token_dir().join("oauth1_token.json");
-    let json = std::fs::read_to_string(&path).context("No OAuth1 token found. Run `pulse garmin-login` first.")?;
-    let token: OAuth1Token = serde_json::from_str(&json).context("Failed to parse oauth1_token.json")?;
+    let json = std::fs::read_to_string(&path)
+        .context("No OAuth1 token found. Run `pulse garmin-login` first.")?;
+    let token: OAuth1Token =
+        serde_json::from_str(&json).context("Failed to parse oauth1_token.json")?;
     Ok(token)
 }
 
@@ -114,8 +116,10 @@ pub fn save_oauth2(token: &OAuth2Token) -> Result<()> {
 /// Load OAuth2 token from disk.
 pub fn load_oauth2() -> Result<OAuth2Token> {
     let path = token_dir().join("oauth2_token.json");
-    let json = std::fs::read_to_string(&path).context("No OAuth2 token found. Run `pulse garmin-login` first.")?;
-    let token: OAuth2Token = serde_json::from_str(&json).context("Failed to parse oauth2_token.json")?;
+    let json = std::fs::read_to_string(&path)
+        .context("No OAuth2 token found. Run `pulse garmin-login` first.")?;
+    let token: OAuth2Token =
+        serde_json::from_str(&json).context("Failed to parse oauth2_token.json")?;
     Ok(token)
 }
 

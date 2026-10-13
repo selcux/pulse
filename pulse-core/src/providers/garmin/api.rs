@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::NaiveDate;
 use serde::Deserialize;
 
@@ -148,9 +148,7 @@ impl<'a> GarminApi<'a> {
     }
 
     pub fn fetch_sleep(&self, date: NaiveDate) -> Result<GarminSleepResponse> {
-        let url = format!(
-            "{CONNECT_API}/sleep-service/sleep/dailySleepData?date={date}"
-        );
+        let url = format!("{CONNECT_API}/sleep-service/sleep/dailySleepData?date={date}");
         self.get_json(&url, "sleep")
     }
 
@@ -167,16 +165,17 @@ impl<'a> GarminApi<'a> {
     }
 
     pub fn fetch_daily_summary(&self, date: NaiveDate) -> Result<GarminDailySummaryResponse> {
-        let url = format!(
-            "{CONNECT_API}/usersummary-service/usersummary/daily/?calendarDate={date}"
-        );
+        let url =
+            format!("{CONNECT_API}/usersummary-service/usersummary/daily/?calendarDate={date}");
         self.get_json(&url, "daily summary")
     }
 
-    pub fn fetch_exercise_sets(&self, garmin_activity_id: &str) -> Result<GarminExerciseSetsResponse> {
-        let url = format!(
-            "{CONNECT_API}/activity-service/activity/{garmin_activity_id}/exerciseSets"
-        );
+    pub fn fetch_exercise_sets(
+        &self,
+        garmin_activity_id: &str,
+    ) -> Result<GarminExerciseSetsResponse> {
+        let url =
+            format!("{CONNECT_API}/activity-service/activity/{garmin_activity_id}/exerciseSets");
         self.get_json(&url, "exercise sets")
     }
 
@@ -227,10 +226,7 @@ mod tests {
         assert_eq!(dto.sleep_time_in_seconds, Some(28800));
         assert_eq!(dto.deep_sleep_seconds, Some(7200));
         assert_eq!(dto.rem_sleep_in_seconds, Some(5400));
-        assert_eq!(
-            dto.sleep_scores.unwrap().overall.unwrap().value,
-            Some(82)
-        );
+        assert_eq!(dto.sleep_scores.unwrap().overall.unwrap().value, Some(82));
     }
 
     #[test]

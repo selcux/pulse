@@ -9,8 +9,8 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::PulseConfig;
-use crate::db::queries;
 use crate::db::Database;
+use crate::db::queries;
 
 /// Composite vitality score for a single day.
 ///
@@ -43,9 +43,9 @@ pub enum PaceTrend {
 /// Pace-of-aging trend computed from a rolling window of vitality scores.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaceInfo {
-    pub multiplier: f64,     // 7d_avg / 30d_avg
+    pub multiplier: f64, // 7d_avg / 30d_avg
     pub trend: PaceTrend,
-    pub vs_baseline: f64,    // 7d_avg - 30d_avg (signed)
+    pub vs_baseline: f64, // 7d_avg - 30d_avg (signed)
     pub seven_day_avg: f64,
     pub thirty_day_avg: f64,
 }
@@ -70,7 +70,13 @@ pub fn calculate_pace(scores: &[VitalityScore]) -> Option<PaceInfo> {
     } else {
         PaceTrend::Accelerating
     };
-    Some(PaceInfo { multiplier, trend, vs_baseline, seven_day_avg, thirty_day_avg })
+    Some(PaceInfo {
+        multiplier,
+        trend,
+        vs_baseline,
+        seven_day_avg,
+        thirty_day_avg,
+    })
 }
 
 /// Calculate vitality scores for the last N days.
@@ -141,8 +147,11 @@ pub fn calculate_vitality(
         // Fitness score (20% when present): VO2 Max + lean body mass
         // vo2_baseline used as fallback when day has no VO2 reading (Garmin doesn't record daily)
         let day_vo2 = heart.and_then(|h| h.vo2_max).or(vo2_baseline);
-        let fitness_component =
-            calculate_fitness_score(day_vo2, config.user.lean_body_mass_kg, config.user.height_cm);
+        let fitness_component = calculate_fitness_score(
+            day_vo2,
+            config.user.lean_body_mass_kg,
+            config.user.height_cm,
+        );
 
         let total = compute_total_score(
             sleep_component,
@@ -170,13 +179,13 @@ pub fn calculate_vitality(
 /// Boundaries match the Finnish fitness classification (Urheiluhallit / Heikko…Erinomainen).
 fn vo2_population_score(vo2: f64) -> f64 {
     const NORMS: &[(f64, f64)] = &[
-        (0.0,   0.0),
-        (26.0,  14.3),
-        (32.0,  28.6),
-        (36.0,  42.9),
-        (42.0,  57.1),
-        (47.0,  71.4),
-        (52.0,  85.7),
+        (0.0, 0.0),
+        (26.0, 14.3),
+        (32.0, 28.6),
+        (36.0, 42.9),
+        (42.0, 57.1),
+        (47.0, 71.4),
+        (52.0, 85.7),
         (60.0, 100.0),
     ];
     for w in NORMS.windows(2) {
@@ -230,8 +239,9 @@ fn compute_total_score(
     match fitness {
         Some(f) => (sleep * 0.25 + recovery * 0.20 + activity * 0.20 + stress * 0.15 + f * 0.20)
             .clamp(0.0, 100.0),
-        None => (sleep * 0.30 + recovery * 0.25 + activity * 0.25 + stress * 0.20)
-            .clamp(0.0, 100.0),
+        None => {
+            (sleep * 0.30 + recovery * 0.25 + activity * 0.25 + stress * 0.20).clamp(0.0, 100.0)
+        }
     }
 }
 
@@ -369,10 +379,7 @@ mod tests {
         };
         let score = calculate_sleep_score(&sleep, 8.0);
         // (87.5 + 70) / 2 = 78.75
-        assert!(
-            (score - 78.75).abs() < 0.01,
-            "Expected ~78.75, got {score}"
-        );
+        assert!((score - 78.75).abs() < 0.01, "Expected ~78.75, got {score}");
     }
 
     #[test]
@@ -411,7 +418,7 @@ mod tests {
         };
         let heart = Heart {
             date: "2026-03-01".into(),
-            resting_hr: Some(60),  // at baseline -> RHR score 100
+            resting_hr: Some(60), // at baseline -> RHR score 100
             max_hr: None,
             min_hr: None,
             hrv_avg: Some(45.0), // 45/50*100 = 90
@@ -420,10 +427,7 @@ mod tests {
         };
         let score = calculate_recovery_score(Some(&recovery), Some(&heart), 60.0, 50.0);
         // avg(80, 90, 100) = 90
-        assert!(
-            (score - 90.0).abs() < 0.01,
-            "Expected ~90.0, got {score}"
-        );
+        assert!((score - 90.0).abs() < 0.01, "Expected ~90.0, got {score}");
     }
 
     #[test]
@@ -465,10 +469,7 @@ mod tests {
         };
         let score = calculate_recovery_score(None, Some(&heart), 55.0, 50.0);
         // RHR only: (2.0 - 55/55) * 100 = 100
-        assert!(
-            (score - 100.0).abs() < 0.01,
-            "Expected 100.0, got {score}"
-        );
+        assert!((score - 100.0).abs() < 0.01, "Expected 100.0, got {score}");
     }
 
     #[test]
@@ -484,10 +485,7 @@ mod tests {
         };
         let score = calculate_recovery_score(None, Some(&heart), 60.0, 50.0);
         // (2.0 - 66/60) * 100 = (2.0 - 1.1) * 100 = 90
-        assert!(
-            (score - 90.0).abs() < 0.01,
-            "Expected ~90.0, got {score}"
-        );
+        assert!((score - 90.0).abs() < 0.01, "Expected ~90.0, got {score}");
     }
 
     // -----------------------------------------------------------------------
@@ -504,10 +502,7 @@ mod tests {
             source: "garmin".into(),
         };
         let score = calculate_activity_score(Some(&activity), 10_000);
-        assert!(
-            (score - 100.0).abs() < 0.01,
-            "Expected 100.0, got {score}"
-        );
+        assert!((score - 100.0).abs() < 0.01, "Expected 100.0, got {score}");
     }
 
     #[test]
@@ -573,10 +568,7 @@ mod tests {
             source: "garmin".into(),
         };
         let score = calculate_stress_score(Some(&stress));
-        assert!(
-            (score - 100.0).abs() < 0.01,
-            "Expected 100.0, got {score}"
-        );
+        assert!((score - 100.0).abs() < 0.01, "Expected 100.0, got {score}");
     }
 
     #[test]
@@ -985,7 +977,10 @@ mod tests {
     fn vo2_score_above_elite_cap() {
         // VO2 above 60 → capped at 100
         let score = vo2_population_score(65.0);
-        assert!((score - 100.0).abs() < 0.01, "Expected 100.0 (cap), got {score}");
+        assert!(
+            (score - 100.0).abs() < 0.01,
+            "Expected 100.0 (cap), got {score}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -997,7 +992,11 @@ mod tests {
         // VO2=28.1 → ~19.3; no LBM
         let score = calculate_fitness_score(Some(28.1), None, None);
         assert!(score.is_some());
-        assert!((score.unwrap() - 19.3).abs() < 0.2, "Expected ~19.3, got {:?}", score);
+        assert!(
+            (score.unwrap() - 19.3).abs() < 0.2,
+            "Expected ~19.3, got {:?}",
+            score
+        );
     }
 
     #[test]
@@ -1011,7 +1010,11 @@ mod tests {
         // No vo2 → excluded; lbm=70, no height → 70/70*100 = 100
         let score = calculate_fitness_score(None, Some(70.0), None);
         assert!(score.is_some());
-        assert!((score.unwrap() - 100.0).abs() < 0.01, "Expected 100.0, got {:?}", score);
+        assert!(
+            (score.unwrap() - 100.0).abs() < 0.01,
+            "Expected 100.0, got {:?}",
+            score
+        );
     }
 
     #[test]
@@ -1042,6 +1045,9 @@ mod tests {
     fn vitality_total_includes_fitness_when_present() {
         let without = compute_total_score(80.0, 80.0, 80.0, 80.0, None);
         let with_fitness = compute_total_score(80.0, 80.0, 80.0, 80.0, Some(40.0));
-        assert!(with_fitness < without, "lower fitness should pull total down");
+        assert!(
+            with_fitness < without,
+            "lower fitness should pull total down"
+        );
     }
 }

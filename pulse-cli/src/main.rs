@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 
 use pulse_health_core::config;
-use pulse_health_core::db::queries;
 use pulse_health_core::db::Database;
+use pulse_health_core::db::queries;
 use pulse_health_core::models::ExerciseSet;
 use pulse_health_core::sync;
 use pulse_health_core::vitality;
@@ -165,10 +165,7 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
             println!("Syncing {}...", name);
             match sync::sync_provider(&db, &cfg, &name, days) {
                 Ok(report) => {
-                    println!(
-                        "  {} records synced",
-                        report.records_synced
-                    );
+                    println!("  {} records synced", report.records_synced);
                     for err in &report.errors {
                         println!("  error: {}", err);
                     }
@@ -180,13 +177,12 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
             let report = sync::sync_all(&db, &cfg, days)?;
             for r in &report.reports {
                 if r.errors.is_empty() {
-                    println!("Syncing {}... {} records synced", r.provider, r.records_synced);
-                } else {
                     println!(
-                        "Syncing {}... error: {}",
-                        r.provider,
-                        r.errors.join("; ")
+                        "Syncing {}... {} records synced",
+                        r.provider, r.records_synced
                     );
+                } else {
+                    println!("Syncing {}... error: {}", r.provider, r.errors.join("; "));
                 }
             }
             if report.reports.is_empty() {
@@ -219,7 +215,14 @@ fn cmd_sleep(days: i32, json: bool) -> anyhow::Result<()> {
 
     println!(
         "{:<12}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
-        "Date", "Total", "Deep", "REM", "Light", "Awake", "Score", "HRV",
+        "Date",
+        "Total",
+        "Deep",
+        "REM",
+        "Light",
+        "Awake",
+        "Score",
+        "HRV",
         sep = " \u{2502} "
     );
     println!(
@@ -260,7 +263,11 @@ fn cmd_heart(days: i32, json: bool) -> anyhow::Result<()> {
 
     println!(
         "{:<12}{sep}{:>10}{sep}{:>6}{sep}{:>6}{sep}{:>8}",
-        "Date", "Resting HR", "Max", "Min", "HRV avg",
+        "Date",
+        "Resting HR",
+        "Max",
+        "Min",
+        "HRV avg",
         sep = " \u{2502} "
     );
     println!(
@@ -298,7 +305,11 @@ fn cmd_recovery(days: i32, json: bool) -> anyhow::Result<()> {
 
     println!(
         "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
-        "Date", "Peak", "Low", "Chrgd", "Draind",
+        "Date",
+        "Peak",
+        "Low",
+        "Chrgd",
+        "Draind",
         sep = " \u{2502} "
     );
     println!(
@@ -336,7 +347,10 @@ fn cmd_activity(days: i32, json: bool) -> anyhow::Result<()> {
 
     println!(
         "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}",
-        "Date", "Steps", "Active min", "Floors",
+        "Date",
+        "Steps",
+        "Active min",
+        "Floors",
         sep = " \u{2502} "
     );
     println!(
@@ -373,7 +387,9 @@ fn cmd_stress(days: i32, json: bool) -> anyhow::Result<()> {
 
     println!(
         "{:<12}{sep}{:>10}{sep}{:>10}",
-        "Date", "Avg Stress", "Max Stress",
+        "Date",
+        "Avg Stress",
+        "Max Stress",
         sep = " \u{2502} "
     );
     println!(
@@ -484,7 +500,10 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
     }
 
     if scores.is_empty() {
-        println!("No vitality data for the last {} days. (Sleep data is required as anchor.)", days);
+        println!(
+            "No vitality data for the last {} days. (Sleep data is required as anchor.)",
+            days
+        );
         return Ok(());
     }
 
@@ -504,7 +523,13 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
 
     println!(
         "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>10}{sep}{:>10}{sep}{:>8}{sep}{:>9}",
-        "Date", "Total", "Sleep", "Recovery", "Activity", "Stress", "Fitness",
+        "Date",
+        "Total",
+        "Sleep",
+        "Recovery",
+        "Activity",
+        "Stress",
+        "Fitness",
         sep = " \u{2502} "
     );
     println!(
@@ -533,8 +558,8 @@ fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
 }
 
 fn cmd_garmin_login(username: Option<String>, mfa: Option<String>) -> anyhow::Result<()> {
-    use pulse_health_core::providers::garmin::auth::LoginResult;
     use pulse_health_core::providers::garmin::GarminProvider;
+    use pulse_health_core::providers::garmin::auth::LoginResult;
 
     // Resolve username: CLI arg > config > prompt
     let email = if let Some(u) = username {
