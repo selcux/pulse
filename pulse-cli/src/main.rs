@@ -1,9 +1,12 @@
+mod output;
+
 use clap::{Parser, Subcommand};
 
+use output::{OutputArgs, OutputFormat, Rows, VitalityReport, WorkoutLog};
 use pulse_health_core::config;
 use pulse_health_core::db::Database;
 use pulse_health_core::db::queries;
-use pulse_health_core::models::ExerciseSet;
+use pulse_health_core::models::{ExerciseSet, Workout};
 use pulse_health_core::sync;
 use pulse_health_core::vitality;
 
@@ -42,57 +45,50 @@ enum Commands {
     Sleep {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Show resting heart rate, min/max HR, and HRV
     Heart {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Show body battery peak/low values
     Recovery {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Show steps, active minutes, and floors
     Activity {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Show average and max stress levels
     Stress {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Show workouts and exercise sets
     Workouts {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Show composite vitality score (sleep + recovery + activity + stress)
     Vitality {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: OutputArgs,
     },
     /// Manage configuration
     Config {
@@ -113,13 +109,13 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::GarminLogin { username, mfa } => cmd_garmin_login(username, mfa),
         Commands::Sync { provider, days } => cmd_sync(provider, days),
-        Commands::Sleep { days, json } => cmd_sleep(days, json),
-        Commands::Heart { days, json } => cmd_heart(days, json),
-        Commands::Recovery { days, json } => cmd_recovery(days, json),
-        Commands::Activity { days, json } => cmd_activity(days, json),
-        Commands::Stress { days, json } => cmd_stress(days, json),
-        Commands::Workouts { days, json } => cmd_workouts(days, json),
-        Commands::Vitality { days, json } => cmd_vitality(days, json),
+        Commands::Sleep { days, output } => cmd_sleep(days, output.format()),
+        Commands::Heart { days, output } => cmd_heart(days, output.format()),
+        Commands::Recovery { days, output } => cmd_recovery(days, output.format()),
+        Commands::Activity { days, output } => cmd_activity(days, output.format()),
+        Commands::Stress { days, output } => cmd_stress(days, output.format()),
+        Commands::Workouts { days, output } => cmd_workouts(days, output.format()),
+        Commands::Vitality { days, output } => cmd_vitality(days, output.format()),
         Commands::Config { action } => cmd_config(action),
     }
 }
@@ -199,12 +195,18 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_sleep(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_sleep(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_sleep(&db, days)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&data)?);
+    if let Some(text) = output::render(
+        format,
+        &Rows {
+            table: "sleep",
+            rows: &data,
+        },
+    )? {
+        println!("{text}");
         return Ok(());
     }
 
@@ -247,12 +249,18 @@ fn cmd_sleep(days: i32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_heart(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_heart(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_heart(&db, days)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&data)?);
+    if let Some(text) = output::render(
+        format,
+        &Rows {
+            table: "heart",
+            rows: &data,
+        },
+    )? {
+        println!("{text}");
         return Ok(());
     }
 
@@ -289,12 +297,18 @@ fn cmd_heart(days: i32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_recovery(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_recovery(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_recovery(&db, days)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&data)?);
+    if let Some(text) = output::render(
+        format,
+        &Rows {
+            table: "recovery",
+            rows: &data,
+        },
+    )? {
+        println!("{text}");
         return Ok(());
     }
 
@@ -331,12 +345,18 @@ fn cmd_recovery(days: i32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_activity(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_activity(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_activity(&db, days)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&data)?);
+    if let Some(text) = output::render(
+        format,
+        &Rows {
+            table: "activity",
+            rows: &data,
+        },
+    )? {
+        println!("{text}");
         return Ok(());
     }
 
@@ -371,12 +391,18 @@ fn cmd_activity(days: i32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_stress(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_stress(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_stress(&db, days)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&data)?);
+    if let Some(text) = output::render(
+        format,
+        &Rows {
+            table: "stress",
+            rows: &data,
+        },
+    )? {
+        println!("{text}");
         return Ok(());
     }
 
@@ -409,29 +435,26 @@ fn cmd_stress(days: i32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_workouts(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_workouts(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let db = Database::open()?;
     let workouts = queries::query_workouts(&db, days)?;
+    let mut entries: Vec<(Workout, Vec<ExerciseSet>)> = Vec::with_capacity(workouts.len());
+    for w in workouts {
+        let sets = queries::query_exercise_sets(&db, &w.id)?;
+        entries.push((w, sets));
+    }
 
-    if json {
-        // Build a combined structure with sets included
-        let mut combined: Vec<serde_json::Value> = Vec::new();
-        for w in &workouts {
-            let sets = queries::query_exercise_sets(&db, &w.id)?;
-            let mut val = serde_json::to_value(w)?;
-            val["exercise_sets"] = serde_json::to_value(&sets)?;
-            combined.push(val);
-        }
-        println!("{}", serde_json::to_string_pretty(&combined)?);
+    if let Some(text) = output::render(format, &WorkoutLog { entries: &entries })? {
+        println!("{text}");
         return Ok(());
     }
 
-    if workouts.is_empty() {
+    if entries.is_empty() {
         println!("No workouts found for the last {} days.", days);
         return Ok(());
     }
 
-    for w in &workouts {
+    for (w, sets) in &entries {
         let duration = format_duration(w.duration_seconds);
         let cal = match w.calories {
             Some(c) => format!("{}cal", c),
@@ -450,8 +473,7 @@ fn cmd_workouts(days: i32, json: bool) -> anyhow::Result<()> {
             w.start_time, label, duration, cal, hr
         );
 
-        let sets = queries::query_exercise_sets(&db, &w.id)?;
-        for s in &sets {
+        for s in sets {
             print_exercise_set(s);
         }
         if !sets.is_empty() {
@@ -477,18 +499,18 @@ fn print_exercise_set(s: &ExerciseSet) {
     );
 }
 
-fn cmd_vitality(days: i32, json: bool) -> anyhow::Result<()> {
+fn cmd_vitality(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
     let scores = vitality::calculate_vitality(&db, &cfg, days)?;
     let pace = vitality::calculate_pace(&scores);
 
-    if json {
-        let output = serde_json::json!({
-            "pace": pace,
-            "scores": scores,
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+    let report = VitalityReport {
+        pace: pace.as_ref(),
+        scores: &scores,
+    };
+    if let Some(text) = output::render(format, &report)? {
+        println!("{text}");
         return Ok(());
     }
 
@@ -618,4 +640,123 @@ fn cmd_config(action: Option<ConfigAction>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use clap::error::ErrorKind;
+    use output::OutputFormat;
+
+    const DATA_COMMANDS: [&str; 7] = [
+        "sleep", "heart", "recovery", "activity", "stress", "workouts", "vitality",
+    ];
+
+    fn parse_format(args: &[&str]) -> Result<OutputFormat, ErrorKind> {
+        let cli = Cli::try_parse_from(args).map_err(|e| e.kind())?;
+        match cli.command {
+            Commands::Sleep { output, .. }
+            | Commands::Heart { output, .. }
+            | Commands::Recovery { output, .. }
+            | Commands::Activity { output, .. }
+            | Commands::Stress { output, .. }
+            | Commands::Workouts { output, .. }
+            | Commands::Vitality { output, .. } => Ok(output.format()),
+            _ => panic!("not a data command"),
+        }
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn data_commands_default_to_table() {
+        for cmd in DATA_COMMANDS {
+            assert_eq!(
+                parse_format(&["pulse", cmd]),
+                Ok(OutputFormat::Table),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_flag_selects_json() {
+        for cmd in DATA_COMMANDS {
+            assert_eq!(
+                parse_format(&["pulse", cmd, "--json"]),
+                Ok(OutputFormat::Json),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_flag_selects_format() {
+        for cmd in DATA_COMMANDS {
+            assert_eq!(
+                parse_format(&["pulse", cmd, "--format", "json"]),
+                Ok(OutputFormat::Json),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_format(&["pulse", cmd, "--format", "table"]),
+                Ok(OutputFormat::Table),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_format(&["pulse", cmd, "--format", "toon"]),
+                Ok(OutputFormat::Toon),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_format(&["pulse", cmd, "--format=json"]),
+                Ok(OutputFormat::Json),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_with_format_is_rejected() {
+        let conflicts = [
+            ["pulse", "sleep", "--json", "--format", "table"],
+            ["pulse", "sleep", "--format", "table", "--json"],
+            ["pulse", "sleep", "--json", "--format", "json"],
+        ];
+        for args in conflicts {
+            assert_eq!(
+                parse_format(&args),
+                Err(ErrorKind::ArgumentConflict),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_format_is_rejected() {
+        for value in ["xml", "JSON", "TOON"] {
+            assert_eq!(
+                parse_format(&["pulse", "sleep", "--format", value]),
+                Err(ErrorKind::InvalidValue),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_flags_exist_only_on_data_commands() {
+        let rejected = [
+            vec!["pulse", "sync", "--format", "json"],
+            vec!["pulse", "sync", "--json"],
+            vec!["pulse", "--format", "json", "sleep"],
+        ];
+        for args in rejected {
+            let kind = Cli::try_parse_from(&args).map_err(|e| e.kind()).err();
+            assert_eq!(kind, Some(ErrorKind::UnknownArgument), "{args:?}");
+        }
+    }
 }

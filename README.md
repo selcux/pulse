@@ -8,7 +8,7 @@ Pulse is a unified health data aggregator that pulls data from Garmin Connect an
 - **Vitality score** — weighted daily composite with configurable targets
 - **Fitness scoring** — VO2 max percentiles (Shvartz & Reinbold norms) + FFMI from lean body mass
 - **Raw data tables** — sleep, heart rate, recovery, activity, stress, workouts
-- **JSON output** — pipe-friendly `--json` flag on all data commands
+- **Machine-readable output** — `--format <table|json|toon>` on all data commands; `--json` is shorthand for `--format json`, and TOON is a compact format that suits LLM input
 - **TUI** — planned interactive terminal dashboard
 
 ## Quick Start
