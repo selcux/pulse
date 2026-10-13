@@ -8,3 +8,4 @@ garth_temp/
 # Private internal docs
 docs/
 AGENTS.md
+.claude/
