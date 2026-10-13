@@ -479,7 +479,7 @@ mod tests {
             workout_id: "w-001".into(),
             set_order: 1,
             exercise_category: Some("chest".into()),
-            exercise_name: "bench press".into(),
+            exercise_name: Some("bench press".into()),
             repetitions: Some(10),
             weight_kg: Some(80.0),
         };
@@ -488,7 +488,7 @@ mod tests {
             workout_id: "w-001".into(),
             set_order: 2,
             exercise_category: Some("chest".into()),
-            exercise_name: "bench press".into(),
+            exercise_name: Some("bench press".into()),
             repetitions: Some(8),
             weight_kg: Some(85.0),
         };
@@ -503,11 +503,47 @@ mod tests {
         assert_eq!(sets[0].set_order, 1);
         assert_eq!(sets[1].set_order, 2);
         assert!((sets[1].weight_kg.unwrap() - 85.0).abs() < f64::EPSILON);
+        assert_eq!(sets[0].exercise_name.as_deref(), Some("bench press"));
 
         // Delete and verify
         delete_exercise_sets_for_workout(&db, "w-001").unwrap();
         let sets = query_exercise_sets(&db, "w-001").unwrap();
         assert!(sets.is_empty());
+    }
+
+    #[test]
+    fn exercise_set_without_name_round_trips() {
+        let db = test_db();
+        let workout = Workout {
+            id: "w-002".into(),
+            name: None,
+            start_time: "2026-03-01T08:00:00".into(),
+            duration_seconds: 3600,
+            activity_type: "strength".into(),
+            calories: Some(350),
+            avg_hr: Some(130),
+            max_hr: Some(165),
+            source: "intervals".into(),
+        };
+        upsert_workout(&db, &workout).unwrap();
+
+        let set = ExerciseSet {
+            id: None,
+            workout_id: "w-002".into(),
+            set_order: 1,
+            exercise_category: None,
+            exercise_name: None,
+            repetitions: Some(12),
+            weight_kg: None,
+        };
+        insert_exercise_set(&db, &set).unwrap();
+
+        // query_exercise_sets drops rows it cannot map, so the length matters here.
+        let sets = query_exercise_sets(&db, "w-002").unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].exercise_name, None);
+        assert_eq!(sets[0].exercise_category, None);
+        assert_eq!(sets[0].repetitions, Some(12));
     }
 
     #[test]

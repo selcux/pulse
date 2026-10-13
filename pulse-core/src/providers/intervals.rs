@@ -57,6 +57,18 @@ fn format_garmin_name(s: &str) -> String {
         .join(" ")
 }
 
+/// What `format_garmin_name` makes of Garmin's `UNKNOWN` placeholder.
+const UNKNOWN_LABEL: &str = "Unknown";
+
+/// Format a Garmin category or exercise name, or `None` when Garmin gave no real value.
+///
+/// A missing value and Garmin's `UNKNOWN` placeholder both mean "not identified". The
+/// comparison is made after formatting, so it matches what the v4 migration converts.
+fn garmin_label(raw: Option<&str>) -> Option<String> {
+    raw.map(format_garmin_name)
+        .filter(|label| label != UNKNOWN_LABEL)
+}
+
 /// Map Garmin Connect exercise sets to our ExerciseSet model, filtering REST sets.
 fn map_garmin_exercise_sets(
     workout_id: &str,
@@ -73,13 +85,8 @@ fn map_garmin_exercise_sets(
                 id: None,
                 workout_id: workout_id.to_string(),
                 set_order: (i + 1) as i32,
-                exercise_category: exercise
-                    .and_then(|e| e.category.as_deref())
-                    .map(format_garmin_name),
-                exercise_name: exercise
-                    .and_then(|e| e.name.as_deref())
-                    .map(format_garmin_name)
-                    .unwrap_or_else(|| "Unknown".into()),
+                exercise_category: garmin_label(exercise.and_then(|e| e.category.as_deref())),
+                exercise_name: garmin_label(exercise.and_then(|e| e.name.as_deref())),
                 repetitions: s.repetition_count,
                 weight_kg: s.weight.map(|w| w / 1000.0),
             }
@@ -347,7 +354,7 @@ mod tests {
         let sets = map_garmin_exercise_sets("w-001", &api_sets);
         assert_eq!(sets.len(), 2);
         assert_eq!(sets[0].set_order, 1);
-        assert_eq!(sets[0].exercise_name, "Bench Press");
+        assert_eq!(sets[0].exercise_name, Some("Bench Press".into()));
         assert_eq!(sets[0].exercise_category, Some("Chest".into()));
         assert_eq!(sets[1].set_order, 2);
         assert_eq!(sets[1].weight_kg, Some(65.0));
@@ -386,10 +393,64 @@ mod tests {
         ];
         let sets = map_garmin_exercise_sets("w-002", &api_sets);
         assert_eq!(sets.len(), 2);
-        assert_eq!(sets[0].exercise_name, "Squat");
+        assert_eq!(sets[0].exercise_name, Some("Squat".into()));
         assert_eq!(sets[0].set_order, 1);
-        assert_eq!(sets[1].exercise_name, "Deadlift");
+        assert_eq!(sets[1].exercise_name, Some("Deadlift".into()));
         assert_eq!(sets[1].set_order, 2);
         assert_eq!(sets[1].weight_kg, Some(120.0));
+    }
+
+    #[test]
+    fn garmin_label_is_none_without_a_real_value() {
+        assert_eq!(garmin_label(None), None);
+        assert_eq!(garmin_label(Some("UNKNOWN")), None);
+        assert_eq!(garmin_label(Some("unknown")), None);
+        assert_eq!(
+            garmin_label(Some("BENCH_PRESS")),
+            Some("Bench Press".into())
+        );
+        // Only the bare placeholder counts, not a name that starts with it.
+        assert_eq!(
+            garmin_label(Some("UNKNOWN_EXERCISE")),
+            Some("Unknown Exercise".into())
+        );
+    }
+
+    #[test]
+    fn map_garmin_exercise_sets_leaves_missing_labels_none() {
+        use crate::providers::garmin::api::{GarminExercise, GarminExerciseSet};
+
+        let set = |category: Option<&str>, name: Option<&str>| GarminExerciseSet {
+            exercises: vec![GarminExercise {
+                category: category.map(Into::into),
+                name: name.map(Into::into),
+            }],
+            repetition_count: Some(10),
+            weight: None,
+            set_type: Some("ACTIVE".into()),
+        };
+        let api_sets = vec![
+            set(Some("CURL"), None),
+            set(Some("UNKNOWN"), None),
+            set(None, None),
+            set(None, Some("PULL_UP")),
+        ];
+        let sets = map_garmin_exercise_sets("w-003", &api_sets);
+        let labels: Vec<(Option<&str>, Option<&str>)> = sets
+            .iter()
+            .map(|s| (s.exercise_category.as_deref(), s.exercise_name.as_deref()))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (Some("Curl"), None),
+                (None, None),
+                (None, None),
+                (None, Some("Pull Up")),
+            ]
+        );
+        // A set without labels is still a set.
+        assert_eq!(sets[1].set_order, 2);
+        assert_eq!(sets[1].repetitions, Some(10));
     }
 }

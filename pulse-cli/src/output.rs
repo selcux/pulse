@@ -263,7 +263,7 @@ mod tests {
                         workout_id: "i101".into(),
                         set_order: 1,
                         exercise_category: Some("chest".into()),
-                        exercise_name: "bench press".into(),
+                        exercise_name: Some("bench press".into()),
                         repetitions: Some(8),
                         weight_kg: Some(80.0),
                     },
@@ -272,7 +272,7 @@ mod tests {
                         workout_id: "i101".into(),
                         set_order: 2,
                         exercise_category: None,
-                        exercise_name: "pull-up".into(),
+                        exercise_name: Some("pull-up".into()),
                         repetitions: Some(10),
                         weight_kg: None,
                     },
@@ -309,12 +309,43 @@ mod tests {
                     workout_id: "i103".into(),
                     set_order: 1,
                     exercise_category: Some("legs".into()),
-                    exercise_name: "squat".into(),
+                    exercise_name: Some("squat".into()),
                     repetitions: Some(5),
                     weight_kg: Some(102.5),
                 }],
             ),
         ]
+    }
+
+    /// One workout whose sets Garmin left partly or wholly unlabelled.
+    fn unlabelled_log() -> Vec<(Workout, Vec<ExerciseSet>)> {
+        let set = |set_order, category: Option<&str>, name: Option<&str>| ExerciseSet {
+            id: Some(i64::from(set_order)),
+            workout_id: "i104".into(),
+            set_order,
+            exercise_category: category.map(Into::into),
+            exercise_name: name.map(Into::into),
+            repetitions: Some(12),
+            weight_kg: None,
+        };
+        vec![(
+            Workout {
+                id: "i104".into(),
+                name: None,
+                start_time: "2026-01-03T07:00:00".into(),
+                duration_seconds: 900,
+                activity_type: "WeightTraining".into(),
+                calories: None,
+                avg_hr: None,
+                max_hr: None,
+                source: "intervals".into(),
+            },
+            vec![
+                set(1, Some("Curl"), None),
+                set(2, None, None),
+                set(3, Some("Plank"), Some("Side Plank")),
+            ],
+        )]
     }
 
     fn vitality_scores() -> Vec<VitalityScore> {
@@ -546,6 +577,57 @@ exercise_sets:
   "21234567890"[1]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
     1,chest,bench press,8,80"#;
 
+    const WORKOUTS_UNLABELLED_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,source}:
+  i104,null,"2026-01-03T07:00:00",900,WeightTraining,null,null,null,intervals
+exercise_sets:
+  i104[3]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
+    1,Curl,null,12,null
+    2,null,null,12,null
+    3,Plank,Side Plank,12,null"#;
+
+    const WORKOUTS_UNLABELLED_JSON: &str = r#"[
+  {
+    "activity_type": "WeightTraining",
+    "avg_hr": null,
+    "calories": null,
+    "duration_seconds": 900,
+    "exercise_sets": [
+      {
+        "exercise_category": "Curl",
+        "exercise_name": null,
+        "id": 1,
+        "repetitions": 12,
+        "set_order": 1,
+        "weight_kg": null,
+        "workout_id": "i104"
+      },
+      {
+        "exercise_category": null,
+        "exercise_name": null,
+        "id": 2,
+        "repetitions": 12,
+        "set_order": 2,
+        "weight_kg": null,
+        "workout_id": "i104"
+      },
+      {
+        "exercise_category": "Plank",
+        "exercise_name": "Side Plank",
+        "id": 3,
+        "repetitions": 12,
+        "set_order": 3,
+        "weight_kg": null,
+        "workout_id": "i104"
+      }
+    ],
+    "id": "i104",
+    "max_hr": null,
+    "name": null,
+    "source": "intervals",
+    "start_time": "2026-01-03T07:00:00"
+  }
+]"#;
+
     const VITALITY_TOON: &str = r#"pace:
   multiplier: 1.05
   trend: steady
@@ -621,6 +703,15 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
             entries: &entries[1..2],
         };
         assert_eq!(toon(&report), WORKOUTS_NUMERIC_ID_TOON);
+    }
+
+    #[test]
+    fn workouts_toon_prints_null_for_a_missing_label() {
+        let entries = unlabelled_log();
+        assert_eq!(
+            toon(&WorkoutLog { entries: &entries }),
+            WORKOUTS_UNLABELLED_TOON
+        );
     }
 
     #[test]
@@ -753,6 +844,15 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
         assert_eq!(
             WorkoutLog { entries: &entries }.json().unwrap(),
             WORKOUTS_JSON
+        );
+    }
+
+    #[test]
+    fn workouts_json_prints_null_for_a_missing_label() {
+        let entries = unlabelled_log();
+        assert_eq!(
+            WorkoutLog { entries: &entries }.json().unwrap(),
+            WORKOUTS_UNLABELLED_JSON
         );
     }
 

@@ -14,10 +14,11 @@ pub struct ExerciseSet {
     pub workout_id: String,
     /// 1-based position of this set within the workout.
     pub set_order: i32,
-    /// Broad exercise category (e.g. `"chest"`, `"back"`, `"legs"`).
+    /// Broad exercise category (e.g. `"Bench Press"`, `"Curl"`). `None` when the source gave none
+    /// or could not classify the exercise.
     pub exercise_category: Option<String>,
-    /// Exercise name (e.g. `"bench press"`, `"squat"`).
-    pub exercise_name: String,
+    /// Exercise name (e.g. `"Barbell Bench Press"`). `None` when the source did not name the exercise.
+    pub exercise_name: Option<String>,
     /// Number of repetitions performed.
     pub repetitions: Option<i32>,
     /// Load used in kilograms (`None` for bodyweight exercises).

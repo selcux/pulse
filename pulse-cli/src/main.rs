@@ -474,7 +474,7 @@ fn cmd_workouts(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         );
 
         for s in sets {
-            print_exercise_set(s);
+            println!("{}", format_exercise_set(s));
         }
         if !sets.is_empty() {
             println!();
@@ -484,7 +484,7 @@ fn cmd_workouts(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_exercise_set(s: &ExerciseSet) {
+fn format_exercise_set(s: &ExerciseSet) -> String {
     let reps = match s.repetitions {
         Some(r) => format!("{}", r),
         None => "-".into(),
@@ -493,10 +493,13 @@ fn print_exercise_set(s: &ExerciseSet) {
         Some(w) => format!("{:.1}kg", w),
         None => "BW".into(),
     };
-    println!(
+    format!(
         "  {:>2}. {:<20} {:>3} x {}",
-        s.set_order, s.exercise_name, reps, weight
-    );
+        s.set_order,
+        s.exercise_name.as_deref().unwrap_or("-"),
+        reps,
+        weight
+    )
 }
 
 fn cmd_vitality(days: i32, format: OutputFormat) -> anyhow::Result<()> {
@@ -665,6 +668,34 @@ mod tests {
             | Commands::Vitality { output, .. } => Ok(output.format()),
             _ => panic!("not a data command"),
         }
+    }
+
+    fn exercise_set(name: Option<&str>) -> ExerciseSet {
+        ExerciseSet {
+            id: Some(1),
+            workout_id: "i101".into(),
+            set_order: 2,
+            exercise_category: Some("Bench Press".into()),
+            exercise_name: name.map(Into::into),
+            repetitions: Some(8),
+            weight_kg: Some(62.5),
+        }
+    }
+
+    #[test]
+    fn exercise_set_line_shows_the_name() {
+        assert_eq!(
+            format_exercise_set(&exercise_set(Some("Barbell Bench Press"))),
+            "   2. Barbell Bench Press    8 x 62.5kg"
+        );
+    }
+
+    #[test]
+    fn exercise_set_line_shows_a_dash_for_a_missing_name() {
+        assert_eq!(
+            format_exercise_set(&exercise_set(None)),
+            "   2. -                      8 x 62.5kg"
+        );
     }
 
     #[test]
