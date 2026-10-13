@@ -75,16 +75,16 @@ fn date_range(days: u32) -> DateRange {
 fn build_providers(config: &PulseConfig) -> Vec<Box<dyn Provider>> {
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
 
-    if let Some(ref garmin) = config.providers.garmin {
-        if garmin.enabled {
-            providers.push(Box::new(GarminProvider::new()));
-        }
+    if let Some(ref garmin) = config.providers.garmin
+        && garmin.enabled
+    {
+        providers.push(Box::new(GarminProvider::new()));
     }
 
-    if let Some(ref intervals) = config.providers.intervals {
-        if intervals.enabled {
-            providers.push(Box::new(IntervalsProvider::new(intervals.clone())));
-        }
+    if let Some(ref intervals) = config.providers.intervals
+        && intervals.enabled
+    {
+        providers.push(Box::new(IntervalsProvider::new(intervals.clone())));
     }
 
     providers

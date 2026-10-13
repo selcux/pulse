@@ -184,52 +184,46 @@ impl Provider for IntervalsProvider {
 
             // 3. For strength activities, fetch exercise sets from Garmin Connect
             let activity_type = api_activity.activity_type.as_deref().unwrap_or("");
-            if Self::is_strength_activity(activity_type) {
-                if let Some(garmin_id) = &api_activity.external_id {
-                    if tokens::tokens_exist() {
-                        match auth::ensure_valid_token(&self.client) {
-                            Ok(token) => {
-                                let garmin_api = GarminApi::new(&self.client, token);
-                                match garmin_api.fetch_exercise_sets(garmin_id) {
-                                    Ok(resp) => {
-                                        if let Err(e) = queries::delete_exercise_sets_for_workout(
-                                            db,
-                                            &api_activity.id,
-                                        ) {
-                                            report.errors.push(format!(
-                                                "Failed to clear exercise sets for {}: {e}",
-                                                api_activity.id
-                                            ));
-                                            continue;
-                                        }
-                                        let sets = map_garmin_exercise_sets(
-                                            &api_activity.id,
-                                            &resp.exercise_sets,
-                                        );
-                                        for set in &sets {
-                                            if let Err(e) = queries::insert_exercise_set(db, set) {
-                                                report.errors.push(format!(
-                                                    "Failed to insert exercise set for {}: {e}",
-                                                    api_activity.id
-                                                ));
-                                            }
-                                        }
-                                        report.records_synced += sets.len();
-                                    }
-                                    Err(e) => {
+            if Self::is_strength_activity(activity_type)
+                && let Some(garmin_id) = &api_activity.external_id
+                && tokens::tokens_exist()
+            {
+                match auth::ensure_valid_token(&self.client) {
+                    Ok(token) => {
+                        let garmin_api = GarminApi::new(&self.client, token);
+                        match garmin_api.fetch_exercise_sets(garmin_id) {
+                            Ok(resp) => {
+                                if let Err(e) =
+                                    queries::delete_exercise_sets_for_workout(db, &api_activity.id)
+                                {
+                                    report.errors.push(format!(
+                                        "Failed to clear exercise sets for {}: {e}",
+                                        api_activity.id
+                                    ));
+                                    continue;
+                                }
+                                let sets =
+                                    map_garmin_exercise_sets(&api_activity.id, &resp.exercise_sets);
+                                for set in &sets {
+                                    if let Err(e) = queries::insert_exercise_set(db, set) {
                                         report.errors.push(format!(
-                                            "Failed to fetch exercise sets for {} from Garmin: {e}",
+                                            "Failed to insert exercise set for {}: {e}",
                                             api_activity.id
                                         ));
                                     }
                                 }
+                                report.records_synced += sets.len();
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "[intervals] Garmin auth failed, skipping exercise sets: {e:#}"
-                                );
+                                report.errors.push(format!(
+                                    "Failed to fetch exercise sets for {} from Garmin: {e}",
+                                    api_activity.id
+                                ));
                             }
                         }
+                    }
+                    Err(e) => {
+                        eprintln!("[intervals] Garmin auth failed, skipping exercise sets: {e:#}");
                     }
                 }
             }

@@ -267,10 +267,10 @@ fn calculate_recovery_score(
     let mut components = Vec::new();
 
     // Body battery peak (0-100 scale already).
-    if let Some(r) = recovery {
-        if let Some(peak) = r.body_battery_peak {
-            components.push(peak as f64);
-        }
+    if let Some(r) = recovery
+        && let Some(peak) = r.body_battery_peak
+    {
+        components.push(peak as f64);
     }
 
     if let Some(h) = heart {
