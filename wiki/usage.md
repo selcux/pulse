@@ -37,9 +37,11 @@ sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds
   2026-01-01,25200,5400,4800,14100,900,null,51.5,garmin
 ```
 
-- `workouts` prints two tables, `workouts` and `exercise_sets`, joined on `workout_id`. Its JSON nests the sets inside each workout instead.
-- `vitality` prints a `pace` block (`pace: null` until seven days are scored) followed by a `scores` table.
+- `workouts` prints a `workouts` table, then `exercise_sets` with one table of sets per workout, keyed by the workout id. The database row id of a set is left out. `exercise_sets: null` means no workout has sets. Its JSON nests the sets inside each workout instead.
+- `vitality` prints a `pace` block (`pace: null` until seven days are scored) followed by a `scores` table. Numbers are rounded as in the terminal table: two decimals for the pace multiplier, one for everything else. JSON keeps full precision.
 - No data prints as empty tables (`sleep: []`).
+
+TOON is a compact view, not a lossless copy of the JSON output.
 
 ## Vitality Score
 

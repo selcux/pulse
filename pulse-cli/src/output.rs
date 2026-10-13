@@ -47,9 +47,13 @@ pub trait Report {
     /// Pretty-printed JSON, byte-identical to what `--json` printed before `--format` existed.
     fn json(&self) -> anyhow::Result<String>;
 
-    /// The same data as named flat tables: a JSON object whose keys are table names in output
+    /// The compact view for an LLM to read: a JSON object whose keys are table names in output
     /// order. Each value is an array of flat objects with identical keys (possibly empty), one
-    /// flat object, or null. Fields keep the model's declaration order.
+    /// flat object, null, or a group: an object that maps a parent id to such an array. Fields
+    /// keep the model's declaration order.
+    ///
+    /// Unlike [`Report::json`] this is not a lossless copy of the data. It may leave out
+    /// database row ids and round computed floats to the precision the terminal table shows.
     fn tables(&self) -> anyhow::Result<Value>;
 }
 
@@ -105,27 +109,93 @@ impl Report for WorkoutLog<'_> {
 
     fn tables(&self) -> anyhow::Result<Value> {
         let workouts: Vec<&Workout> = self.entries.iter().map(|(w, _)| w).collect();
-        let sets: Vec<&ExerciseSet> = self.entries.iter().flat_map(|(_, s)| s).collect();
+        // One table of sets per workout, keyed by the workout id, so the id is stated once
+        // and not on every row.
+        let mut sets_by_workout = Map::new();
+        for (workout, sets) in self.entries {
+            if sets.is_empty() {
+                continue;
+            }
+            let mut rows = serde_json::to_value(sets)?;
+            for row in rows.as_array_mut().into_iter().flatten() {
+                if let Some(row) = row.as_object_mut() {
+                    // The group key carries the workout id, and the row id means nothing
+                    // outside the database.
+                    row.shift_remove("workout_id");
+                    row.shift_remove("id");
+                }
+            }
+            sets_by_workout.insert(workout.id.clone(), rows);
+        }
         let mut tables = Map::new();
         tables.insert("workouts".into(), serde_json::to_value(workouts)?);
-        tables.insert("exercise_sets".into(), serde_json::to_value(sets)?);
+        // Null, not an empty group: a bare `exercise_sets:` as the last line reads as cut off.
+        let sets = if sets_by_workout.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(sets_by_workout)
+        };
+        tables.insert("exercise_sets".into(), sets);
         Ok(Value::Object(tables))
+    }
+}
+
+impl VitalityReport<'_> {
+    /// `{pace, scores}` at full precision, keys in declaration order.
+    fn value(&self) -> anyhow::Result<Value> {
+        let mut value = Map::new();
+        value.insert("pace".into(), serde_json::to_value(self.pace)?);
+        value.insert("scores".into(), serde_json::to_value(self.scores)?);
+        Ok(Value::Object(value))
     }
 }
 
 impl Report for VitalityReport<'_> {
     fn json(&self) -> anyhow::Result<String> {
-        let mut combined = self.tables()?;
+        let mut combined = self.value()?;
         // Keeps `--json` keys alphabetical even when serde_json's `preserve_order` is on.
         combined.sort_all_objects();
         Ok(serde_json::to_string_pretty(&combined)?)
     }
 
     fn tables(&self) -> anyhow::Result<Value> {
-        let mut tables = Map::new();
-        tables.insert("pace".into(), serde_json::to_value(self.pace)?);
-        tables.insert("scores".into(), serde_json::to_value(self.scores)?);
-        Ok(Value::Object(tables))
+        let mut tables = self.value()?;
+        // Same precision as the terminal table: two decimals for the pace multiplier, one for
+        // everything else. The scores are results of divisions and the rest is noise.
+        if let Some(pace) = tables.get_mut("pace").and_then(Value::as_object_mut) {
+            for (field, value) in pace.iter_mut() {
+                round_floats(value, if field == "multiplier" { 2 } else { 1 });
+            }
+        }
+        if let Some(scores) = tables.get_mut("scores") {
+            round_floats(scores, 1);
+        }
+        Ok(tables)
+    }
+}
+
+/// Rounds every float inside `value` to `decimals` places, the way `{:.N}` prints it, so the
+/// result shows the same digits as the terminal table. Integers and non-numbers are untouched.
+fn round_floats(value: &mut Value, decimals: usize) {
+    match value {
+        Value::Number(number) if number.is_f64() => {
+            let rounded = number
+                .as_f64()
+                .and_then(|x| format!("{x:.decimals$}").parse::<f64>().ok())
+                // A small negative rounds to `-0.0`; print it as plain zero.
+                .map(|r| if r == 0.0 { 0.0 } else { r })
+                .and_then(serde_json::Number::from_f64);
+            if let Some(rounded) = rounded {
+                *number = rounded;
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| round_floats(item, decimals)),
+        Value::Object(fields) => fields
+            .values_mut()
+            .for_each(|field| round_floats(field, decimals)),
+        _ => {}
     }
 }
 
@@ -459,28 +529,36 @@ mod tests {
   i101,"Push day, heavy","2026-01-02T07:30:00",3600,WeightTraining,410,118,152,intervals
   "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,intervals
   i103,"Legs: \"5x5\" - deload","2026-01-01T06:00:00",2400,WeightTraining,300,110,140,intervals
-exercise_sets[3]{id,workout_id,set_order,exercise_category,exercise_name,repetitions,weight_kg}:
-  1,i101,1,chest,bench press,8,80
-  2,i101,2,null,pull-up,10,null
-  3,i103,1,legs,squat,5,102.5"#;
+exercise_sets:
+  i101[2]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
+    1,chest,bench press,8,80
+    2,null,pull-up,10,null
+  i103[1]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
+    1,legs,squat,5,102.5"#;
 
     const WORKOUTS_NO_SETS_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,source}:
   "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,intervals
-exercise_sets: []"#;
+exercise_sets: null"#;
+
+    const WORKOUTS_NUMERIC_ID_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,source}:
+  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,intervals
+exercise_sets:
+  "21234567890"[1]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
+    1,chest,bench press,8,80"#;
 
     const VITALITY_TOON: &str = r#"pace:
-  multiplier: 1.0526315789473684
+  multiplier: 1.05
   trend: steady
   vs_baseline: -3.5
   seven_day_avg: 74.2
   thirty_day_avg: 70.5
 scores[2]{date,total_score,sleep_score,recovery_score,activity_score,stress_score,fitness_score}:
-  2026-01-02,78.4,90.20833333333333,71.25,100,75,64.3
+  2026-01-02,78.4,90.2,71.2,100,75,64.3
   2026-01-01,70,76.5,50,62,75,null"#;
 
     const VITALITY_NO_PACE_TOON: &str = r#"pace: null
 scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_score,fitness_score}:
-  2026-01-02,78.4,90.20833333333333,71.25,100,75,64.3"#;
+  2026-01-02,78.4,90.2,71.2,100,75,64.3"#;
 
     // `"#tag"` ends an `r#"..."#` literal, hence the extra hash.
     const QUOTING_TOON: &str = r##"activity[18]{date,steps,active_minutes,floors,source}:
@@ -529,9 +607,20 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
     }
 
     #[test]
-    fn workouts_toon_is_two_flat_tables() {
+    fn workouts_toon_groups_sets_by_workout() {
         let entries = workout_log();
         assert_eq!(toon(&WorkoutLog { entries: &entries }), WORKOUTS_TOON);
+    }
+
+    #[test]
+    fn workouts_toon_quotes_a_numeric_workout_id_key() {
+        let mut entries = workout_log();
+        let set = entries[0].1.remove(0);
+        entries[1].1.push(set);
+        let report = WorkoutLog {
+            entries: &entries[1..2],
+        };
+        assert_eq!(toon(&report), WORKOUTS_NUMERIC_ID_TOON);
     }
 
     #[test]
@@ -547,8 +636,21 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
     fn workouts_toon_empty() {
         assert_eq!(
             toon(&WorkoutLog { entries: &[] }),
-            "workouts: []\nexercise_sets: []"
+            "workouts: []\nexercise_sets: null"
         );
+    }
+
+    #[test]
+    fn vitality_toon_prints_a_small_negative_as_zero() {
+        let pace = PaceInfo {
+            vs_baseline: -0.04,
+            ..pace()
+        };
+        let report = VitalityReport {
+            pace: Some(&pace),
+            scores: &[],
+        };
+        assert!(toon(&report).contains("\n  vs_baseline: 0\n"));
     }
 
     #[test]
