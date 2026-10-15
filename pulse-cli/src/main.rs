@@ -765,6 +765,11 @@ mod tests {
                 "{cmd}"
             );
             assert_eq!(
+                parse_format(&["pulse", cmd, "--format", "ison"]),
+                Ok(OutputFormat::Ison),
+                "{cmd}"
+            );
+            assert_eq!(
                 parse_format(&["pulse", cmd, "--format=json"]),
                 Ok(OutputFormat::Json),
                 "{cmd}"
@@ -790,7 +795,7 @@ mod tests {
 
     #[test]
     fn unknown_format_is_rejected() {
-        for value in ["xml", "JSON", "TOON"] {
+        for value in ["xml", "JSON", "TOON", "ISON"] {
             assert_eq!(
                 parse_format(&["pulse", "sleep", "--format", value]),
                 Err(ErrorKind::InvalidValue),

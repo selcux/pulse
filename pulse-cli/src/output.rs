@@ -8,6 +8,8 @@ use pulse_health_core::models::{ExerciseSet, Workout};
 use pulse_health_core::vitality::{PaceInfo, VitalityScore};
 use serde_json::{Map, Value};
 
+mod ison;
+
 /// How a data command prints its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
@@ -17,6 +19,8 @@ pub enum OutputFormat {
     Json,
     /// TOON: field names declared once per table (compact input for LLMs)
     Toon,
+    /// ISON: field names declared once per table, cells separated by spaces (compact input for LLMs)
+    Ison,
 }
 
 /// Output flags shared by every data command.
@@ -47,9 +51,10 @@ pub trait Report {
     /// Pretty-printed JSON, byte-identical to what `--json` printed before `--format` existed.
     fn json(&self) -> anyhow::Result<String>;
 
-    /// The compact view for an LLM to read: a JSON object whose keys are table names in output
-    /// order. Each value is an array of flat objects with identical keys (possibly empty), one
-    /// flat object, null, or a group: an object that maps a parent id to such an array. Fields
+    /// The compact view for an LLM to read, which feeds TOON and ISON: a JSON object whose keys
+    /// are table names in output order. Each value is an array of flat objects with identical
+    /// keys (possibly empty), one flat object, null, or a group: an object that maps a parent id
+    /// to such an array. Fields
     /// keep the model's declaration order.
     ///
     /// Unlike [`Report::json`] this is not a lossless copy of the data. It may leave out
@@ -59,7 +64,7 @@ pub trait Report {
 
 /// Rows of one flat model (`sleep`, `heart`, `recovery`, `activity`, `stress`).
 pub struct Rows<'a, T> {
-    /// Table name in TOON output; the command name, which is also the SQLite table name.
+    /// Table name in TOON and ISON output; the command name, which is also the SQLite table name.
     pub table: &'static str,
     /// The rows, newest first, as queried.
     pub rows: &'a [T],
@@ -206,6 +211,9 @@ pub fn render(format: OutputFormat, report: &impl Report) -> anyhow::Result<Opti
         OutputFormat::Json => report.json().map(Some),
         OutputFormat::Toon => toon_format::encode_default(&report.tables()?)
             .context("Failed to encode TOON output")
+            .map(Some),
+        OutputFormat::Ison => ison::encode(&report.tables()?)
+            .context("Failed to encode ISON output")
             .map(Some),
     }
 }
@@ -663,6 +671,83 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
   2026-01-01,null,null,null,pull-up
   2026-01-01,null,null,null,2026-01-02"##;
 
+    const SLEEP_ISON: &str = r#"table.sleep
+date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_score hrv_ms source
+2026-01-02 27000 6300 5400 14400 900 82 48.0 garmin
+2026-01-01 25200 5400 4800 14100 900 null 51.5 garmin"#;
+
+    const WORKOUTS_ISON: &str = r#"table.workouts
+id name start_time duration_seconds activity_type calories avg_hr max_hr source
+i101 "Push day, heavy" 2026-01-02T07:30:00 3600 WeightTraining 410 118 152 intervals
+"21234567890" null 2026-01-01T18:05:00 1800 Run null null null intervals
+i103 "Legs: \"5x5\" - deload" 2026-01-01T06:00:00 2400 WeightTraining 300 110 140 intervals
+
+table.exercise_sets.i101
+set_order exercise_category exercise_name repetitions weight_kg
+1 chest "bench press" 8 80.0
+2 null pull-up 10 null
+
+table.exercise_sets.i103
+set_order exercise_category exercise_name repetitions weight_kg
+1 legs squat 5 102.5"#;
+
+    const WORKOUTS_NO_SETS_ISON: &str = r#"table.workouts
+id name start_time duration_seconds activity_type calories avg_hr max_hr source
+"21234567890" null 2026-01-01T18:05:00 1800 Run null null null intervals"#;
+
+    const WORKOUTS_NUMERIC_ID_ISON: &str = r#"table.workouts
+id name start_time duration_seconds activity_type calories avg_hr max_hr source
+"21234567890" null 2026-01-01T18:05:00 1800 Run null null null intervals
+
+table.exercise_sets.21234567890
+set_order exercise_category exercise_name repetitions weight_kg
+1 chest "bench press" 8 80.0"#;
+
+    const WORKOUTS_UNLABELLED_ISON: &str = r#"table.workouts
+id name start_time duration_seconds activity_type calories avg_hr max_hr source
+i104 null 2026-01-03T07:00:00 900 WeightTraining null null null intervals
+
+table.exercise_sets.i104
+set_order exercise_category exercise_name repetitions weight_kg
+1 Curl null 12 null
+2 null null 12 null
+3 Plank "Side Plank" 12 null"#;
+
+    const VITALITY_ISON: &str = r#"object.pace
+multiplier trend vs_baseline seven_day_avg thirty_day_avg
+1.05 steady -3.5 74.2 70.5
+
+table.scores
+date total_score sleep_score recovery_score activity_score stress_score fitness_score
+2026-01-02 78.4 90.2 71.2 100.0 75.0 64.3
+2026-01-01 70.0 76.5 50.0 62.0 75.0 null"#;
+
+    const VITALITY_NO_PACE_ISON: &str = r#"table.scores
+date total_score sleep_score recovery_score activity_score stress_score fitness_score
+2026-01-02 78.4 90.2 71.2 100.0 75.0 64.3"#;
+
+    // `"#tag"` ends an `r#"..."#` literal, hence the extra hash.
+    const QUOTING_ISON: &str = r##"table.activity
+date steps active_minutes floors source
+2026-01-01 null null null a,b
+2026-01-01 null null null "a: b"
+2026-01-01 null null null "say \"hi\""
+2026-01-01 null null null -lead
+2026-01-01 null null null "#tag"
+2026-01-01 null null null "true"
+2026-01-01 null null null "null"
+2026-01-01 null null null "123"
+2026-01-01 null null null "1e5"
+2026-01-01 null null null ""
+2026-01-01 null null null " pad "
+2026-01-01 null null null "line\nbreak"
+2026-01-01 null null null "back\\slash"
+2026-01-01 null null null [x]
+2026-01-01 null null null "café — ok"
+2026-01-01 null null null "plain text"
+2026-01-01 null null null pull-up
+2026-01-01 null null null 2026-01-02"##;
+
     fn toon(report: &impl Report) -> String {
         render(OutputFormat::Toon, report)
             .unwrap()
@@ -781,6 +866,127 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
             rows: &rows,
         };
         assert_eq!(toon(&report), QUOTING_TOON);
+    }
+
+    // The name keeps the helper apart from the `ison` module that `use super::*` brings in.
+    fn to_ison(report: &impl Report) -> String {
+        render(OutputFormat::Ison, report)
+            .unwrap()
+            .expect("ison always renders text")
+    }
+
+    #[test]
+    fn rows_ison_is_one_table_block() {
+        let rows = sleep_rows();
+        let report = Rows {
+            table: "sleep",
+            rows: &rows,
+        };
+        assert_eq!(to_ison(&report), SLEEP_ISON);
+    }
+
+    #[test]
+    fn rows_ison_empty_is_an_empty_document() {
+        let report = Rows::<Sleep> {
+            table: "sleep",
+            rows: &[],
+        };
+        assert_eq!(to_ison(&report), "");
+    }
+
+    #[test]
+    fn workouts_ison_is_a_block_per_workout_with_sets() {
+        let entries = workout_log();
+        assert_eq!(to_ison(&WorkoutLog { entries: &entries }), WORKOUTS_ISON);
+    }
+
+    #[test]
+    fn workouts_ison_without_sets() {
+        let entries = workout_log();
+        let report = WorkoutLog {
+            entries: &entries[1..2],
+        };
+        assert_eq!(to_ison(&report), WORKOUTS_NO_SETS_ISON);
+    }
+
+    #[test]
+    fn workouts_ison_names_a_block_after_a_numeric_workout_id() {
+        let mut entries = workout_log();
+        let set = entries[0].1.remove(0);
+        entries[1].1.push(set);
+        let report = WorkoutLog {
+            entries: &entries[1..2],
+        };
+        assert_eq!(to_ison(&report), WORKOUTS_NUMERIC_ID_ISON);
+    }
+
+    #[test]
+    fn workouts_ison_prints_null_for_a_missing_label() {
+        let entries = unlabelled_log();
+        assert_eq!(
+            to_ison(&WorkoutLog { entries: &entries }),
+            WORKOUTS_UNLABELLED_ISON
+        );
+    }
+
+    #[test]
+    fn workouts_ison_empty_is_an_empty_document() {
+        assert_eq!(to_ison(&WorkoutLog { entries: &[] }), "");
+    }
+
+    #[test]
+    fn vitality_ison_is_pace_object_and_scores_table() {
+        let (pace, scores) = (pace(), vitality_scores());
+        let report = VitalityReport {
+            pace: Some(&pace),
+            scores: &scores,
+        };
+        assert_eq!(to_ison(&report), VITALITY_ISON);
+    }
+
+    #[test]
+    fn vitality_ison_without_pace_leaves_the_block_out() {
+        let scores = vitality_scores();
+        let report = VitalityReport {
+            pace: None,
+            scores: &scores[..1],
+        };
+        assert_eq!(to_ison(&report), VITALITY_NO_PACE_ISON);
+    }
+
+    #[test]
+    fn vitality_ison_empty_is_an_empty_document() {
+        let report = VitalityReport {
+            pace: None,
+            scores: &[],
+        };
+        assert_eq!(to_ison(&report), "");
+    }
+
+    #[test]
+    fn vitality_ison_prints_a_small_negative_as_zero() {
+        let pace = PaceInfo {
+            vs_baseline: -0.04,
+            ..pace()
+        };
+        let report = VitalityReport {
+            pace: Some(&pace),
+            scores: &[],
+        };
+        assert_eq!(
+            to_ison(&report),
+            "object.pace\nmultiplier trend vs_baseline seven_day_avg thirty_day_avg\n1.05 steady 0.0 74.2 70.5"
+        );
+    }
+
+    #[test]
+    fn ison_quotes_only_what_the_spec_requires() {
+        let rows = quoting_rows();
+        let report = Rows {
+            table: "activity",
+            rows: &rows,
+        };
+        assert_eq!(to_ison(&report), QUOTING_ISON);
     }
 
     #[test]
