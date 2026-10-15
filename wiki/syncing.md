@@ -33,6 +33,16 @@ pulse sync garmin
 
 Garmin sleep data is typically available the **next morning**, not immediately after waking. If today's sleep score is missing, sync again after ~9:00 AM local time.
 
+### VO2 Max
+
+Garmin estimates VO2 max only after qualifying activities, such as an outdoor run or walk with GPS and heart rate. Pulse stores the estimate on the day it was made; other days stay empty, and the vitality score uses the average of the last 30 days instead.
+
+Before 0.5.1, pulse never stored VO2 max. To fill earlier days, sync them once:
+
+```bash
+pulse sync garmin --days 30
+```
+
 ---
 
 ## Intervals.icu
@@ -75,7 +85,7 @@ Only days synced from this version on have a stored body. To cover older days, s
 pulse sync --days 365
 ```
 
-Garmin takes about 4 requests per day, so a year takes roughly 10 to 15 minutes. If Garmin throttles you and some days report errors, run the same command again, or sync in chunks (for example `--days 90`).
+Garmin takes about 5 requests per day, so a year takes roughly 12 to 19 minutes. If Garmin throttles you and some days report errors, run the same command again, or sync in chunks (for example `--days 90`).
 
 ---
 

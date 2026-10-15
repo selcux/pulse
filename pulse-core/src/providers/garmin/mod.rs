@@ -16,7 +16,7 @@ use crate::providers::{DateRange, MetricType, Provider, SyncReport, record_raw_r
 
 use api::{
     GarminApi, GarminBodyBatteryResponse, GarminDailySummaryResponse, GarminEndpoint,
-    GarminHrvResponse, GarminSleepResponse,
+    GarminHrvResponse, GarminMaxMetResponse, GarminSleepResponse,
 };
 
 pub struct GarminProvider {
@@ -98,6 +98,7 @@ impl GarminProvider {
         date: NaiveDate,
         summary: &GarminDailySummaryResponse,
         hrv_avg: Option<f64>,
+        vo2_max: Option<f64>,
     ) -> Heart {
         Heart {
             date: date.to_string(),
@@ -105,7 +106,7 @@ impl GarminProvider {
             max_hr: summary.max_heart_rate,
             min_hr: summary.min_heart_rate,
             hrv_avg,
-            vo2_max: summary.vo2_max_value,
+            vo2_max,
             source: "garmin".into(),
         }
     }
@@ -264,7 +265,20 @@ impl GarminProvider {
             (None, None)
         });
 
-        let rows = Self::daily_from_body(date, &summary_body, hrv_avg, body_battery)?;
+        // 5. VO2 max (separate endpoint) — only days with a new estimate have one
+        let vo2_max = match api.fetch_body(GarminEndpoint::MaxMet, &key) {
+            Ok(body) => {
+                self.record(db, GarminEndpoint::MaxMet, &key, &body)?;
+                Self::vo2_max_from_body(date, &body)
+            }
+            Err(e) => Err(e),
+        }
+        .unwrap_or_else(|e| {
+            eprintln!("[garmin] VO2 max fetch failed for {date}: {e:#}");
+            None
+        });
+
+        let rows = Self::daily_from_body(date, &summary_body, hrv_avg, vo2_max, body_battery)?;
         count += Self::upsert_daily(db, &rows)?;
 
         Ok(count)
@@ -298,6 +312,25 @@ impl GarminProvider {
             .unwrap_or((None, None)))
     }
 
+    /// VO2 max estimated on `date`, from a maxmet body: the `generic` entry whose `calendarDate`
+    /// is `date`, `vo2MaxPreciseValue` first, then `vo2MaxValue`; a value of 0 or less is absent.
+    /// `Ok(None)` for an empty body, `null`, `[]`, a cycling-only day, or entries for other dates.
+    /// `Err` when the body is not a list of entries of the expected shape.
+    fn vo2_max_from_body(date: NaiveDate, body: &str) -> Result<Option<f64>> {
+        if body.trim().is_empty() {
+            return Ok(None);
+        }
+        let entries: Option<GarminMaxMetResponse> = api::parse_body(GarminEndpoint::MaxMet, body)?;
+        let date = date.to_string();
+        Ok(entries
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.generic)
+            .find(|estimate| estimate.calendar_date == date)
+            .and_then(|estimate| estimate.vo2_max_precise_value.or(estimate.vo2_max_value))
+            .filter(|value| *value > 0.0))
+    }
+
     /// Map a sleep body to a [`Sleep`] row, or `None` when the day has no sleep data.
     fn sleep_from_body(date: NaiveDate, body: &str, hrv_avg: Option<f64>) -> Result<Option<Sleep>> {
         let resp: GarminSleepResponse = api::parse_body(GarminEndpoint::Sleep, body)?;
@@ -309,12 +342,13 @@ impl GarminProvider {
         date: NaiveDate,
         body: &str,
         hrv_avg: Option<f64>,
+        vo2_max: Option<f64>,
         body_battery: (Option<i32>, Option<i32>),
     ) -> Result<DailyRows> {
         let summary: GarminDailySummaryResponse =
             api::parse_body(GarminEndpoint::DailySummary, body)?;
         Ok(DailyRows {
-            heart: Self::map_heart(date, &summary, hrv_avg),
+            heart: Self::map_heart(date, &summary, hrv_avg, vo2_max),
             recovery: Self::map_recovery(date, &summary, body_battery.0, body_battery.1),
             activity: Self::map_activity(date, &summary),
             stress: Self::map_stress(date, &summary),
@@ -381,7 +415,16 @@ pub(crate) fn rebuild(db: &Database) -> Result<SyncReport> {
                 }
                 None => (None, None),
             };
-            match GarminProvider::daily_from_body(date, &body, hrv_avg, body_battery) {
+            let vo2_max = match stored(GarminEndpoint::MaxMet, &key)? {
+                Some(mm_body) => {
+                    GarminProvider::vo2_max_from_body(date, &mm_body).unwrap_or_else(|e| {
+                        errors.push(format!("{key} vo2 max: {e:#}"));
+                        None
+                    })
+                }
+                None => None,
+            };
+            match GarminProvider::daily_from_body(date, &body, hrv_avg, vo2_max, body_battery) {
                 Ok(rows) => records_synced += GarminProvider::upsert_daily(db, &rows)?,
                 Err(e) => errors.push(format!("{key} daily summary: {e:#}")),
             }
@@ -479,7 +522,7 @@ mod tests {
     fn map_heart_with_hrv() {
         let summary = test_daily_summary();
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        let heart = GarminProvider::map_heart(date, &summary, Some(42.5));
+        let heart = GarminProvider::map_heart(date, &summary, Some(42.5), None);
         assert_eq!(heart.resting_hr, Some(55));
         assert_eq!(heart.max_hr, Some(142));
         assert_eq!(heart.min_hr, Some(48));
@@ -490,8 +533,21 @@ mod tests {
     fn map_heart_without_hrv() {
         let summary = test_daily_summary();
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        let heart = GarminProvider::map_heart(date, &summary, None);
+        let heart = GarminProvider::map_heart(date, &summary, None, None);
         assert!(heart.hrv_avg.is_none());
+    }
+
+    #[test]
+    fn map_heart_takes_vo2_max_from_its_argument_not_the_summary() {
+        let mut summary = test_daily_summary();
+        summary.vo2_max_value = Some(48.5);
+
+        let heart = GarminProvider::map_heart(day(), &summary, Some(42.5), Some(47.6));
+        assert_eq!(heart.vo2_max, Some(47.6));
+        assert_eq!(heart.hrv_avg, Some(42.5));
+
+        let heart = GarminProvider::map_heart(day(), &summary, None, None);
+        assert_eq!(heart.vo2_max, None);
     }
 
     #[test]
@@ -584,6 +640,10 @@ mod tests {
     const HRV_BODY: &str = r#"{"hrvSummary":{"lastNightAvg":42.5}}"#;
     const SUMMARY_BODY: &str = r#"{"restingHeartRate":55,"maxHeartRate":142,"minHeartRate":48,"totalSteps":12345,"activeSeconds":3600,"floorsAscended":10,"averageStressLevel":35,"maxStressLevel":78,"bodyBatteryHighestValue":95,"bodyBatteryLowestValue":25,"vo2MaxValue":48.5,"totalKilocalories":2450.0}"#;
     const BB_BODY: &str = r#"[{"charged":85,"drained":62}]"#;
+    /// Modeled on public maxmet samples (docs/plans/2026-10-16-vo2-max.md); not yet checked
+    /// against a live response from the owner's account.
+    const MAXMET_BODY: &str = r#"[{"userId":12345678,"generic":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":47.6,"vo2MaxValue":48.0,"fitnessAge":null,"fitnessAgeDescription":null,"maxMetCategory":0},"cycling":null,"heatAltitudeAcclimation":{"acclimationPercentage":0,"altitudeAcclimation":0,"heatAcclimationPercentage":0}}]"#;
+    const MAXMET_CYCLING_ONLY_BODY: &str = r#"[{"userId":1,"generic":null,"cycling":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":55.2,"vo2MaxValue":55,"maxMetCategory":1}}]"#;
 
     fn day() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
@@ -648,16 +708,147 @@ mod tests {
     }
 
     #[test]
+    fn vo2_max_from_body_prefers_the_precise_value() {
+        assert_eq!(
+            GarminProvider::vo2_max_from_body(day(), MAXMET_BODY).unwrap(),
+            Some(47.6)
+        );
+    }
+
+    #[test]
+    fn vo2_max_from_body_falls_back_to_the_rounded_value() {
+        let body = r#"[{"generic":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":null,"vo2MaxValue":48}}]"#;
+        assert_eq!(
+            GarminProvider::vo2_max_from_body(day(), body).unwrap(),
+            Some(48.0)
+        );
+    }
+
+    #[test]
+    fn vo2_max_from_body_is_none_without_an_estimate() {
+        let zero =
+            r#"[{"generic":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":0,"vo2MaxValue":0}}]"#;
+        for body in ["", "  ", "null", "[]", MAXMET_CYCLING_ONLY_BODY, zero] {
+            assert_eq!(
+                GarminProvider::vo2_max_from_body(day(), body).unwrap(),
+                None,
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vo2_max_from_body_takes_only_the_requested_date() {
+        let earlier = r#"{"generic":{"calendarDate":"2026-02-27","vo2MaxPreciseValue":46.1}}"#;
+        let requested = r#"{"generic":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":47.6}}"#;
+        assert_eq!(
+            GarminProvider::vo2_max_from_body(day(), &format!("[{earlier},{requested}]")).unwrap(),
+            Some(47.6)
+        );
+        assert_eq!(
+            GarminProvider::vo2_max_from_body(day(), &format!("[{earlier}]")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn vo2_max_from_body_errors_on_an_unexpected_shape() {
+        let err = GarminProvider::vo2_max_from_body(
+            day(),
+            r#"{"generic":{"calendarDate":"2026-03-01"}}"#,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("Failed to parse VO2 max response"));
+        for body in [
+            r#"[{"generic":{"vo2MaxValue":48}}]"#,
+            r#"[{"generic":{"calendarDate":"2026-03-01","vo2MaxValue":"high"}}]"#,
+        ] {
+            assert!(
+                GarminProvider::vo2_max_from_body(day(), body).is_err(),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
     fn daily_from_body_maps_all_four_rows() {
-        let rows =
-            GarminProvider::daily_from_body(day(), SUMMARY_BODY, Some(42.5), (Some(85), Some(62)))
-                .unwrap();
+        let rows = GarminProvider::daily_from_body(
+            day(),
+            SUMMARY_BODY,
+            Some(42.5),
+            Some(47.6),
+            (Some(85), Some(62)),
+        )
+        .unwrap();
         assert_eq!(rows.heart.resting_hr, Some(55));
         assert_eq!(rows.heart.hrv_avg, Some(42.5));
+        assert_eq!(rows.heart.vo2_max, Some(47.6));
         assert_eq!(rows.recovery.body_battery_peak, Some(95));
         assert_eq!(rows.recovery.body_battery_charged, Some(85));
         assert_eq!(rows.activity.steps, Some(12345));
         assert_eq!(rows.stress.max_stress, Some(78));
+    }
+
+    #[test]
+    fn daily_from_body_ignores_vo2_max_in_the_summary() {
+        // SUMMARY_BODY carries "vo2MaxValue":48.5; pulse no longer reads it.
+        let rows =
+            GarminProvider::daily_from_body(day(), SUMMARY_BODY, None, None, (None, None)).unwrap();
+        assert_eq!(rows.heart.vo2_max, None);
+    }
+
+    /// `heart.vo2_max` for `date`, `None` when the row has no value.
+    fn heart_vo2_max(db: &Database, date: &str) -> Option<f64> {
+        db.conn()
+            .query_row("SELECT vo2_max FROM heart WHERE date = ?1", [date], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn rebuild_leaves_vo2_max_null_without_an_estimate() {
+        let db = Database::open_memory().unwrap();
+        store(&db, GarminEndpoint::DailySummary, DAY, SUMMARY_BODY);
+        store(
+            &db,
+            GarminEndpoint::DailySummary,
+            "2026-03-02",
+            SUMMARY_BODY,
+        );
+        store(&db, GarminEndpoint::MaxMet, "2026-03-02", "[]");
+
+        let report = rebuild(&db).unwrap();
+
+        assert!(report.errors.is_empty());
+        for date in [DAY, "2026-03-02"] {
+            assert_eq!(rows_on(&db, "heart", date), 1, "{date}");
+            let resting_hr: Option<i32> = db
+                .conn()
+                .query_row(
+                    "SELECT resting_hr FROM heart WHERE date = ?1",
+                    [date],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(resting_hr, Some(55), "{date}");
+            assert_eq!(heart_vo2_max(&db, date), None, "{date}");
+        }
+    }
+
+    #[test]
+    fn rebuild_reports_a_maxmet_body_that_does_not_parse_and_keeps_the_day() {
+        let db = Database::open_memory().unwrap();
+        store(&db, GarminEndpoint::DailySummary, DAY, SUMMARY_BODY);
+        store(&db, GarminEndpoint::MaxMet, DAY, r#"{"generic":{}}"#);
+
+        let report = rebuild(&db).unwrap();
+
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].starts_with("2026-03-01 vo2 max:"));
+        assert_eq!(report.records_synced, 4);
+        assert_eq!(rows_on(&db, "heart", DAY), 1);
+        assert_eq!(heart_vo2_max(&db, DAY), None);
     }
 
     #[test]
@@ -667,6 +858,7 @@ mod tests {
         store(&db, GarminEndpoint::Hrv, DAY, HRV_BODY);
         store(&db, GarminEndpoint::DailySummary, DAY, SUMMARY_BODY);
         store(&db, GarminEndpoint::BodyBattery, DAY, BB_BODY);
+        store(&db, GarminEndpoint::MaxMet, DAY, MAXMET_BODY);
 
         let report = rebuild(&db).unwrap();
 
@@ -678,13 +870,7 @@ mod tests {
         }
         let sleep = queries::get_sleep(&db, DAY).unwrap().unwrap();
         assert_eq!(sleep.hrv_ms, Some(42.5));
-        let vo2_max: Option<f64> = db
-            .conn()
-            .query_row("SELECT vo2_max FROM heart WHERE date = ?1", [DAY], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(vo2_max, Some(48.5));
+        assert_eq!(heart_vo2_max(&db, DAY), Some(47.6));
         let drained: Option<i32> = db
             .conn()
             .query_row(

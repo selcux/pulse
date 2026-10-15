@@ -635,6 +635,91 @@ mod tests {
         );
     }
 
+    /// Insert a sleep row of 8 hours for `date`, so the day gets a vitality score.
+    fn insert_sleep_day(db: &crate::db::Database, date: &str) {
+        queries::upsert_sleep(
+            db,
+            &Sleep {
+                date: date.into(),
+                total_seconds: 28800,
+                deep_seconds: 0,
+                rem_seconds: 0,
+                light_seconds: 0,
+                awake_seconds: 0,
+                sleep_score: None,
+                hrv_ms: None,
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fitness_uses_the_30_day_vo2_average_on_days_without_an_estimate() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let config = test_config();
+        let today = chrono::Local::now().date_naive();
+        let days = [
+            (today, Some(50.0)),
+            (today - chrono::Duration::days(1), None),
+            (today - chrono::Duration::days(2), Some(46.0)),
+        ];
+
+        for (date, vo2_max) in days {
+            let date = date.to_string();
+            insert_sleep_day(&db, &date);
+            queries::upsert_heart(
+                &db,
+                &Heart {
+                    date,
+                    resting_hr: None,
+                    max_hr: None,
+                    min_hr: None,
+                    hrv_avg: None,
+                    vo2_max,
+                    source: "garmin".into(),
+                },
+            )
+            .unwrap();
+        }
+
+        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        assert_eq!(scores.len(), 3);
+
+        // Own estimate on days that have one; the mean (48.0) on the day without.
+        for (date, expected_vo2) in days.map(|(d, _)| d).into_iter().zip([50.0, 48.0, 46.0]) {
+            let score = scores
+                .iter()
+                .find(|s| s.date == date.to_string())
+                .unwrap_or_else(|| panic!("no score for {date}"));
+            let expected = vo2_population_score(expected_vo2);
+            let actual = score.fitness_score.expect("fitness score present");
+            assert!(
+                (actual - expected).abs() < 1e-9,
+                "{date}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn fitness_falls_back_to_the_config_vo2_max_without_synced_estimates() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let mut config = test_config();
+        config.user.vo2_max = Some(42.0);
+        let today = chrono::Local::now().date_naive().to_string();
+        insert_sleep_day(&db, &today);
+
+        let scores = calculate_vitality(&db, &config, 7).unwrap();
+
+        assert_eq!(scores.len(), 1);
+        let actual = scores[0].fitness_score.expect("fitness score present");
+        let expected = vo2_population_score(42.0);
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     #[test]
     fn config_baseline_overrides_auto_computed() {
         let db = crate::db::Database::open_memory().unwrap();

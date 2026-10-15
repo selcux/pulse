@@ -125,9 +125,37 @@ pub struct GarminDailySummaryResponse {
     pub bmr_kilocalories: Option<f64>,
     #[serde(default)]
     pub total_distance_meters: Option<f64>,
-    // Fitness
+    /// Not sent by Garmin in any daily summary seen so far (issue #1). Pulse reads VO2 max from
+    /// the maxmet endpoint and ignores this field. Kept so the 0.5 API does not change; remove it
+    /// in the next breaking release.
     #[serde(default)]
     pub vo2_max_value: Option<f64>,
+}
+
+/// VO2 max: /metrics-service/metrics/maxmet/daily/{date}/{date}
+/// One entry per day with a new estimate; `[]` (or no body) on other days. Declares only the
+/// fields pulse reads; the stored body keeps the rest.
+pub(crate) type GarminMaxMetResponse = Vec<GarminMaxMetEntry>;
+
+/// One day of the maxmet response.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GarminMaxMetEntry {
+    /// The general (running and walking) estimate. `null` on days with only a cycling estimate.
+    pub(crate) generic: Option<GarminVo2MaxEstimate>,
+}
+
+/// A VO2 max estimate, in ml/kg/min.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GarminVo2MaxEstimate {
+    /// `YYYY-MM-DD` of the estimate. Required, so a changed shape fails to parse instead of
+    /// reading as "no estimate".
+    pub(crate) calendar_date: String,
+    /// The estimate with one decimal, e.g. `47.6`.
+    pub(crate) vo2_max_precise_value: Option<f64>,
+    /// The estimate rounded to a whole number, as the Garmin app shows it.
+    pub(crate) vo2_max_value: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +241,7 @@ pub(crate) enum GarminEndpoint {
     BodyBattery,
     DailySummary,
     ExerciseSets,
+    MaxMet,
 }
 
 impl GarminEndpoint {
@@ -225,6 +254,7 @@ impl GarminEndpoint {
             Self::BodyBattery => "body_battery",
             Self::DailySummary => "daily_summary",
             Self::ExerciseSets => "exercise_sets",
+            Self::MaxMet => "maxmet",
         }
     }
 
@@ -236,6 +266,7 @@ impl GarminEndpoint {
             Self::BodyBattery => "body battery",
             Self::DailySummary => "daily summary",
             Self::ExerciseSets => "exercise sets",
+            Self::MaxMet => "VO2 max",
         }
     }
 
@@ -254,6 +285,9 @@ impl GarminEndpoint {
             }
             Self::ExerciseSets => {
                 format!("{CONNECT_API}/activity-service/activity/{key}/exerciseSets")
+            }
+            Self::MaxMet => {
+                format!("{CONNECT_API}/metrics-service/metrics/maxmet/daily/{key}/{key}")
             }
         }
     }
@@ -279,6 +313,7 @@ mod tests {
         assert_eq!(GarminEndpoint::BodyBattery.name(), "body_battery");
         assert_eq!(GarminEndpoint::DailySummary.name(), "daily_summary");
         assert_eq!(GarminEndpoint::ExerciseSets.name(), "exercise_sets");
+        assert_eq!(GarminEndpoint::MaxMet.name(), "maxmet");
         assert_eq!(PROVIDER, "garmin");
     }
 
@@ -303,6 +338,10 @@ mod tests {
         assert_eq!(
             GarminEndpoint::ExerciseSets.url("22005844470"),
             "https://connectapi.garmin.com/activity-service/activity/22005844470/exerciseSets"
+        );
+        assert_eq!(
+            GarminEndpoint::MaxMet.url("2026-03-01"),
+            "https://connectapi.garmin.com/metrics-service/metrics/maxmet/daily/2026-03-01/2026-03-01"
         );
     }
 
@@ -429,5 +468,37 @@ mod tests {
         let resp: GarminDailySummaryResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.resting_heart_rate, Some(58));
         assert!((resp.vo2_max_value.unwrap() - 48.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn deserialize_max_met_response() {
+        let json = r#"[{"userId":12345678,"generic":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":47.6,"vo2MaxValue":48.0,"fitnessAge":null,"fitnessAgeDescription":null,"maxMetCategory":0},"cycling":null,"heatAltitudeAcclimation":{"acclimationPercentage":0,"altitudeAcclimation":0,"heatAcclimationPercentage":0}}]"#;
+        let resp: Option<GarminMaxMetResponse> = serde_json::from_str(json).unwrap();
+        let entries = resp.unwrap();
+        assert_eq!(entries.len(), 1);
+        let generic = entries[0].generic.as_ref().unwrap();
+        assert_eq!(generic.calendar_date, "2026-03-01");
+        assert_eq!(generic.vo2_max_precise_value, Some(47.6));
+        assert_eq!(generic.vo2_max_value, Some(48.0));
+    }
+
+    #[test]
+    fn deserialize_max_met_tolerates_null_and_cycling_only_days() {
+        let null: Option<GarminMaxMetResponse> = serde_json::from_str("null").unwrap();
+        assert!(null.is_none());
+
+        let empty: Option<GarminMaxMetResponse> = serde_json::from_str("[]").unwrap();
+        assert!(empty.unwrap().is_empty());
+
+        let cycling_only = r#"[{"userId":1,"generic":null,"cycling":{"calendarDate":"2026-03-01","vo2MaxPreciseValue":55.2,"vo2MaxValue":55,"maxMetCategory":1}}]"#;
+        let entries: GarminMaxMetResponse = serde_json::from_str(cycling_only).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].generic.is_none());
+
+        let integer = r#"[{"generic":{"calendarDate":"2026-03-01","vo2MaxValue":61}}]"#;
+        let entries: GarminMaxMetResponse = serde_json::from_str(integer).unwrap();
+        let generic = entries[0].generic.as_ref().unwrap();
+        assert_eq!(generic.vo2_max_value, Some(61.0));
+        assert_eq!(generic.vo2_max_precise_value, None);
     }
 }

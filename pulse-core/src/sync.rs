@@ -241,6 +241,30 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_all_fills_vo2_max_for_the_baseline_and_vitality() {
+        let db = crate::db::Database::open_memory().unwrap();
+        // query_* and the baselines filter on date('now'), so use today.
+        let today = Local::now().date_naive().to_string();
+        let maxmet = format!(
+            r#"[{{"userId":1,"generic":{{"calendarDate":"{today}","vo2MaxPreciseValue":47.6,"vo2MaxValue":48.0}},"cycling":null}}]"#
+        );
+        queries::upsert_raw_response(&db, "garmin", "sleep", &today, SLEEP).unwrap();
+        queries::upsert_raw_response(&db, "garmin", "daily_summary", &today, SUMMARY).unwrap();
+        queries::upsert_raw_response(&db, "garmin", "maxmet", &today, &maxmet).unwrap();
+
+        let report = rebuild_all(&db).unwrap();
+
+        assert_eq!(report.total_errors, 0);
+        let baseline = queries::compute_vo2_baseline(&db).unwrap().unwrap();
+        assert!((baseline - 47.6).abs() < 1e-9);
+        let scores =
+            crate::vitality::calculate_vitality(&db, &test_config(false, None), 7).unwrap();
+        assert_eq!(scores.len(), 1);
+        // vo2_population_score(47.6) = 71.4 + 0.6 / 5 * 14.3 = 73.116
+        assert!((scores[0].fitness_score.unwrap() - 73.116).abs() < 0.01);
+    }
+
+    #[test]
     fn rebuild_all_rolls_back_on_a_database_error() {
         let db = crate::db::Database::open_memory().unwrap();
         queries::upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", SLEEP).unwrap();

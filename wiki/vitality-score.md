@@ -99,9 +99,9 @@ Scored against **Shvartz & Reinbold (1990)** population norms using piecewise li
 | > 60 | Elite | 100 (capped) |
 
 VO2 max source priority:
-1. Value synced from Garmin for that specific day
-2. 30-day average of synced Garmin values
-3. Manual `vo2_max` in config
+1. The estimate Garmin made that day (Garmin estimates VO2 max only after qualifying activities, so most days have none)
+2. Average of the estimates synced in the last 30 days
+3. `vo2_max` in config
 
 #### FFMI (Fat-Free Mass Index)
 

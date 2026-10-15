@@ -10,7 +10,7 @@ Personal targets and biometrics used for scoring.
 |---|---|---|---|
 | `sleep_target_hours` | float | `8.0` | Sleep duration target for scoring (hours) |
 | `steps_target` | int | `10000` | Daily step goal |
-| `vo2_max` | float | — | Manual VO2 max override (ml/kg/min). Overrides synced Garmin value. |
+| `vo2_max` | float | — | Fallback VO2 max (ml/kg/min), used when no VO2 max estimate was synced from Garmin in the last 30 days. |
 | `lean_body_mass_kg` | float | — | Lean body mass in kg. Required for FFMI fitness scoring. |
 | `height_cm` | float | — | Height in cm. When set, enables FFMI over flat-reference LBM. |
 | `age` | int | — | Age in years. Reserved for future population norm adjustments. |
