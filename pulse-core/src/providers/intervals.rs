@@ -62,11 +62,12 @@ const UNKNOWN_LABEL: &str = "Unknown";
 
 /// Format a Garmin category or exercise name, or `None` when Garmin gave no real value.
 ///
-/// A missing value and Garmin's `UNKNOWN` placeholder both mean "not identified". The
-/// comparison is made after formatting, so it matches what the v4 migration converts.
+/// A missing value, an empty value, and Garmin's `UNKNOWN` placeholder all mean "not
+/// identified". The checks are made after formatting, so a value made only of underscores,
+/// which formats to an empty string, counts as empty too.
 fn garmin_label(raw: Option<&str>) -> Option<String> {
     raw.map(format_garmin_name)
-        .filter(|label| label != UNKNOWN_LABEL)
+        .filter(|label| !label.is_empty() && label != UNKNOWN_LABEL)
 }
 
 /// Map Garmin Connect exercise sets to our ExerciseSet model, filtering REST sets.
@@ -405,6 +406,10 @@ mod tests {
         assert_eq!(garmin_label(None), None);
         assert_eq!(garmin_label(Some("UNKNOWN")), None);
         assert_eq!(garmin_label(Some("unknown")), None);
+        // Empty, or made only of separators, formats to an empty string.
+        assert_eq!(garmin_label(Some("")), None);
+        assert_eq!(garmin_label(Some("_")), None);
+        assert_eq!(garmin_label(Some("__")), None);
         assert_eq!(
             garmin_label(Some("BENCH_PRESS")),
             Some("Bench Press".into())
