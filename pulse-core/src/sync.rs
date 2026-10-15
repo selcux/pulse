@@ -1,10 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Local;
 
 use crate::config::PulseConfig;
 use crate::db::Database;
-use crate::providers::garmin::GarminProvider;
-use crate::providers::intervals::IntervalsProvider;
+use crate::providers::garmin::{self, GarminProvider};
+use crate::providers::intervals::{self, IntervalsProvider};
 use crate::providers::{DateRange, Provider, SyncReport};
 
 /// Result of syncing all providers.
@@ -66,6 +66,31 @@ pub fn sync_provider(
     provider.sync(db, &range)
 }
 
+/// Refill the mapped tables from the provider responses stored in `raw_responses`, without network access.
+///
+/// Runs in one transaction: a database error rolls the whole rebuild back. A stored body that no
+/// longer parses is reported in its provider's `errors` and leaves its rows as they were. Rows synced
+/// before raw storage existed have no stored body and are left as they are. Ignores `enabled` in the config.
+pub fn rebuild_all(db: &Database) -> Result<FullSyncReport> {
+    // Dropping the transaction without a commit rolls it back.
+    let tx = db
+        .conn()
+        .unchecked_transaction()
+        .context("Failed to start rebuild")?;
+
+    let reports = vec![garmin::rebuild(db)?, intervals::rebuild(db)?];
+
+    tx.commit().context("Failed to commit rebuild")?;
+
+    let total_synced = reports.iter().map(|r| r.records_synced).sum();
+    let total_errors = reports.iter().map(|r| r.errors.len()).sum();
+    Ok(FullSyncReport {
+        reports,
+        total_synced,
+        total_errors,
+    })
+}
+
 fn date_range(days: u32) -> DateRange {
     let end = Local::now().date_naive();
     let start = end - chrono::Duration::days(days as i64);
@@ -78,13 +103,18 @@ fn build_providers(config: &PulseConfig) -> Vec<Box<dyn Provider>> {
     if let Some(ref garmin) = config.providers.garmin
         && garmin.enabled
     {
-        providers.push(Box::new(GarminProvider::new()));
+        providers.push(Box::new(
+            GarminProvider::new().with_raw_responses(config.storage.raw_responses),
+        ));
     }
 
     if let Some(ref intervals) = config.providers.intervals
         && intervals.enabled
     {
-        providers.push(Box::new(IntervalsProvider::new(intervals.clone())));
+        providers.push(Box::new(
+            IntervalsProvider::new(intervals.clone())
+                .with_raw_responses(config.storage.raw_responses),
+        ));
     }
 
     providers
@@ -93,7 +123,10 @@ fn build_providers(config: &PulseConfig) -> Vec<Box<dyn Provider>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GarminConfig, IntervalsConfig, ProvidersConfig, PulseConfig, UserConfig};
+    use crate::config::{
+        GarminConfig, IntervalsConfig, ProvidersConfig, PulseConfig, StorageConfig, UserConfig,
+    };
+    use crate::db::queries;
 
     fn test_config(garmin_enabled: bool, intervals: Option<IntervalsConfig>) -> PulseConfig {
         PulseConfig {
@@ -114,6 +147,7 @@ mod tests {
                 }),
                 intervals,
             },
+            storage: StorageConfig::default(),
         }
     }
 
@@ -175,6 +209,50 @@ mod tests {
         assert!(report.reports.is_empty());
         assert_eq!(report.total_synced, 0);
         assert_eq!(report.total_errors, 0);
+    }
+
+    const SLEEP: &str = r#"{"dailySleepDTO":{"sleepTimeInSeconds":28800,"deepSleepSeconds":7200,"remSleepSeconds":5400,"lightSleepSeconds":14400,"awakeSleepSeconds":1800}}"#;
+    const SUMMARY: &str = r#"{"restingHeartRate":55,"totalSteps":12345}"#;
+    const RUN: &str = r#"{"id":"i1","start_date_local":"2026-03-01T08:00:00","type":"Run"}"#;
+
+    #[test]
+    fn rebuild_all_on_an_empty_store_writes_nothing() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let report = rebuild_all(&db).unwrap();
+        let names: Vec<&str> = report.reports.iter().map(|r| r.provider.as_str()).collect();
+        assert_eq!(names, ["garmin", "intervals"]);
+        assert_eq!(report.total_synced, 0);
+        assert_eq!(report.total_errors, 0);
+    }
+
+    #[test]
+    fn rebuild_all_refills_both_providers() {
+        let db = crate::db::Database::open_memory().unwrap();
+        queries::upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", SLEEP).unwrap();
+        queries::upsert_raw_response(&db, "garmin", "daily_summary", "2026-03-01", SUMMARY)
+            .unwrap();
+        queries::upsert_raw_response(&db, "intervals", "activity", "i1", RUN).unwrap();
+
+        let report = rebuild_all(&db).unwrap();
+
+        assert_eq!(report.total_errors, 0);
+        // 1 sleep, 4 daily rows, 1 workout.
+        assert_eq!(report.total_synced, 6);
+    }
+
+    #[test]
+    fn rebuild_all_rolls_back_on_a_database_error() {
+        let db = crate::db::Database::open_memory().unwrap();
+        queries::upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", SLEEP).unwrap();
+        queries::upsert_raw_response(&db, "garmin", "daily_summary", "2026-03-01", SUMMARY)
+            .unwrap();
+        // Sleep is written, then the heart upsert fails.
+        db.conn().execute_batch("DROP TABLE heart;").unwrap();
+
+        assert!(rebuild_all(&db).is_err());
+
+        assert!(db.conn().is_autocommit());
+        assert!(queries::get_sleep(&db, "2026-03-01").unwrap().is_none());
     }
 
     #[test]

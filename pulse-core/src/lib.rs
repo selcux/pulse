@@ -13,7 +13,7 @@
 //! | [`db`] | SQLite database, migrations, and queries |
 //! | [`models`] | Plain data structs for each health metric |
 //! | [`providers`] | [`Provider`](providers::Provider) trait + Garmin/Intervals implementations |
-//! | [`sync`] | Orchestrate syncing across all enabled providers |
+//! | [`sync`] | Orchestrate syncing across enabled providers, and rebuilding from stored responses |
 //! | [`vitality`] | Compute and trend composite vitality scores |
 //!
 //! # Quick start

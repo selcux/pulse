@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 5;
+const CURRENT_VERSION: i32 = 6;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -52,6 +52,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v5(db)?;
     }
 
+    if version < 6 {
+        migrate_v6(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -75,6 +79,27 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Creates `raw_responses`, which keeps each provider response body as received so the mapped
+/// tables can be refilled without a re-sync. `CREATE TABLE IF NOT EXISTS`: safe to run again.
+///
+/// The `json_valid` check keeps a malformed body out of the table, because a later migration
+/// that runs `json_extract` over every body would fail on it and stop the database from opening.
+fn migrate_v6(db: &Database) -> Result<()> {
+    db.conn()
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS raw_responses (
+                provider   TEXT NOT NULL,
+                endpoint   TEXT NOT NULL,
+                key        TEXT NOT NULL,
+                body       TEXT NOT NULL CHECK (json_valid(body)),
+                fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (provider, endpoint, key)
+            );",
+        )
+        .context("Failed to run v6 migration")?;
     Ok(())
 }
 
@@ -328,7 +353,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 5);
+        assert_eq!(CURRENT_VERSION, 6);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -492,7 +517,7 @@ mod tests {
     fn v5_converts_empty_labels_to_null() {
         let db = v4_db_with_empty_labels();
         run(&db).unwrap();
-        assert_eq!(current_version(&db).unwrap(), 5);
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
         assert_eq!(set_rows(&db), empty_labels_converted());
     }
 
@@ -502,5 +527,63 @@ mod tests {
         migrate_v5(&db).unwrap();
         migrate_v5(&db).unwrap();
         assert_eq!(set_rows(&db), empty_labels_converted());
+    }
+
+    /// A database as pulse 0.4.0 left it: schema version 5.
+    fn v5_db() -> Database {
+        let db = v4_db_with_empty_labels();
+        migrate_v5(&db).unwrap();
+        set_version(&db, 5).unwrap();
+        db
+    }
+
+    #[test]
+    fn v6_creates_raw_responses() {
+        let db = v5_db();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        assert_eq!(set_rows(&db), empty_labels_converted());
+
+        let mut stmt = db
+            .conn()
+            .prepare("PRAGMA table_info(raw_responses)")
+            .unwrap();
+        let columns: Vec<(String, String, bool, i32)> = stmt
+            .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(5)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let expected: Vec<(String, String, bool, i32)> = [
+            ("provider", "TEXT", true, 1),
+            ("endpoint", "TEXT", true, 2),
+            ("key", "TEXT", true, 3),
+            ("body", "TEXT", true, 0),
+            ("fetched_at", "TEXT", true, 0),
+        ]
+        .into_iter()
+        .map(|(n, t, nn, pk)| (n.to_string(), t.to_string(), nn, pk))
+        .collect();
+        assert_eq!(columns, expected);
+    }
+
+    #[test]
+    fn v6_can_run_twice() {
+        let db = v5_db();
+        migrate_v6(&db).unwrap();
+        migrate_v6(&db).unwrap();
+    }
+
+    #[test]
+    fn raw_responses_rejects_a_body_that_is_not_json() {
+        let db = Database::open_memory().unwrap();
+        let insert = |body: &str| {
+            db.conn().execute(
+                "INSERT INTO raw_responses (provider, endpoint, key, body) VALUES ('p', 'e', ?1, ?1)",
+                [body],
+            )
+        };
+        assert!(insert("<html>").is_err());
+        assert!(insert("").is_err());
+        assert!(insert("{}").is_ok());
     }
 }

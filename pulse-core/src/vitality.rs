@@ -319,7 +319,7 @@ fn calculate_stress_score(stress: Option<&crate::models::Stress>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ProvidersConfig, PulseConfig, UserConfig};
+    use crate::config::{ProvidersConfig, PulseConfig, StorageConfig, UserConfig};
     use crate::db::queries;
     use crate::models::{Activity, Heart, Recovery, Sleep, Stress};
 
@@ -339,6 +339,7 @@ mod tests {
                 garmin: None,
                 intervals: None,
             },
+            storage: StorageConfig::default(),
         }
     }
 

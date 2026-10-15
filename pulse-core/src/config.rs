@@ -12,6 +12,9 @@ use std::path::PathBuf;
 pub struct PulseConfig {
     pub user: UserConfig,
     pub providers: ProvidersConfig,
+    /// Storage options; the `[storage]` table may be omitted.
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 /// Personal targets and optional manual baselines used for vitality scoring.
@@ -65,6 +68,24 @@ pub struct IntervalsConfig {
     pub athlete_id: String,
 }
 
+/// Local storage options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Keep each provider response body in the database, so later versions can fill new columns
+    /// and `pulse rebuild` can refill the tables without a re-sync. Defaults to `true`.
+    /// When off, a day synced again also loses the body stored for it earlier.
+    pub raw_responses: bool,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            raw_responses: true,
+        }
+    }
+}
+
 /// Returns the pulse config directory: ~/.pulse/
 pub fn config_dir() -> PathBuf {
     dirs::home_dir()
@@ -96,6 +117,7 @@ pub fn default_config() -> PulseConfig {
                 athlete_id: String::new(),
             }),
         },
+        storage: StorageConfig::default(),
     }
 }
 
@@ -126,4 +148,35 @@ pub fn write_default_config() -> Result<PathBuf> {
     std::fs::write(&config_path, contents).context("Failed to write config.toml")?;
 
     Ok(config_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_defaults_on_when_the_table_is_missing() {
+        let config: PulseConfig = toml::from_str("[user]\n[providers]\n").unwrap();
+        assert!(config.storage.raw_responses);
+    }
+
+    #[test]
+    fn storage_defaults_on_when_the_key_is_missing() {
+        let config: PulseConfig = toml::from_str("[user]\n[providers]\n[storage]\n").unwrap();
+        assert!(config.storage.raw_responses);
+    }
+
+    #[test]
+    fn storage_switch_turns_off() {
+        let config: PulseConfig =
+            toml::from_str("[user]\n[providers]\n[storage]\nraw_responses = false\n").unwrap();
+        assert!(!config.storage.raw_responses);
+    }
+
+    #[test]
+    fn default_config_writes_the_storage_table() {
+        let text = toml::to_string_pretty(&default_config()).unwrap();
+        assert!(text.contains("[storage]"));
+        assert!(text.contains("raw_responses = true"));
+    }
 }

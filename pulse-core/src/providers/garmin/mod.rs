@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod tokens;
 
+use std::collections::BTreeSet;
 use std::thread;
 use std::time::Duration;
 
@@ -11,12 +12,16 @@ use chrono::NaiveDate;
 use crate::db::Database;
 use crate::db::queries;
 use crate::models::{Activity, Heart, Recovery, Sleep, Stress};
-use crate::providers::{DateRange, MetricType, Provider, SyncReport};
+use crate::providers::{DateRange, MetricType, Provider, SyncReport, record_raw_response};
 
-use api::{GarminApi, GarminDailySummaryResponse, GarminSleepResponse};
+use api::{
+    GarminApi, GarminBodyBatteryResponse, GarminDailySummaryResponse, GarminEndpoint,
+    GarminHrvResponse, GarminSleepResponse,
+};
 
 pub struct GarminProvider {
     client: reqwest::blocking::Client,
+    raw_responses: bool,
 }
 
 impl GarminProvider {
@@ -27,7 +32,14 @@ impl GarminProvider {
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .expect("Failed to build HTTP client"),
+            raw_responses: true,
         }
+    }
+
+    /// Keep (`true`, the default) or stop keeping each response body in `raw_responses`.
+    pub fn with_raw_responses(mut self, enabled: bool) -> Self {
+        self.raw_responses = enabled;
+        self
     }
 
     /// Perform login. Delegates to auth module.
@@ -200,58 +212,187 @@ impl Provider for GarminProvider {
     }
 }
 
+/// The rows one daily-summary body maps to.
+struct DailyRows {
+    heart: Heart,
+    recovery: Recovery,
+    activity: Activity,
+    stress: Stress,
+}
+
 impl GarminProvider {
     /// Sync all metrics for a single date. Returns count of records upserted.
+    ///
+    /// Each body is recorded in `raw_responses` before it is mapped, so a mapped row is never
+    /// newer than its stored body.
     fn sync_date(&self, db: &Database, api: &GarminApi, date: NaiveDate) -> Result<usize> {
         let mut count = 0;
+        let key = date.to_string();
 
         // 1. HRV (separate endpoint) — fetched first so sleep can include it
-        let hrv_avg = match api.fetch_hrv(date) {
-            Ok(hrv_resp) => hrv_resp.hrv_summary.and_then(|s| s.last_night_avg),
+        let hrv_body = match api.fetch_body(GarminEndpoint::Hrv, &key) {
+            Ok(body) => {
+                self.record(db, GarminEndpoint::Hrv, &key, &body)?;
+                Some(body)
+            }
             Err(_) => None, // HRV often missing, don't fail the whole date
         };
+        let hrv_avg = Self::hrv_avg_from_body(hrv_body.as_deref());
 
         // 2. Sleep
-        let sleep_resp = api.fetch_sleep(date)?;
-        if let Some(sleep) = Self::map_sleep(date, &sleep_resp, hrv_avg) {
+        let sleep_body = api.fetch_body(GarminEndpoint::Sleep, &key)?;
+        self.record(db, GarminEndpoint::Sleep, &key, &sleep_body)?;
+        if let Some(sleep) = Self::sleep_from_body(date, &sleep_body, hrv_avg)? {
             queries::upsert_sleep(db, &sleep)?;
             count += 1;
         }
 
         // 3. Daily summary → Heart, Recovery, Activity, Stress
-        let summary = api.fetch_daily_summary(date)?;
-
-        let heart = Self::map_heart(date, &summary, hrv_avg);
-        queries::upsert_heart(db, &heart)?;
-        count += 1;
+        let summary_body = api.fetch_body(GarminEndpoint::DailySummary, &key)?;
+        self.record(db, GarminEndpoint::DailySummary, &key, &summary_body)?;
 
         // 4. Body battery charged/drained (separate endpoint)
-        let (bb_charged, bb_drained) = match api.fetch_body_battery(date) {
-            Ok(items) => items
-                .into_iter()
-                .next()
-                .map(|item| (item.charged, item.drained))
-                .unwrap_or((None, None)),
-            Err(e) => {
-                eprintln!("[garmin] body battery fetch failed for {date}: {e:#}");
-                (None, None)
+        let body_battery = match api.fetch_body(GarminEndpoint::BodyBattery, &key) {
+            Ok(body) => {
+                self.record(db, GarminEndpoint::BodyBattery, &key, &body)?;
+                Self::body_battery_from_body(&body)
             }
-        };
+            Err(e) => Err(e),
+        }
+        .unwrap_or_else(|e| {
+            eprintln!("[garmin] body battery fetch failed for {date}: {e:#}");
+            (None, None)
+        });
 
-        let recovery = Self::map_recovery(date, &summary, bb_charged, bb_drained);
-        queries::upsert_recovery(db, &recovery)?;
-        count += 1;
-
-        let activity = Self::map_activity(date, &summary);
-        queries::upsert_activity(db, &activity)?;
-        count += 1;
-
-        let stress = Self::map_stress(date, &summary);
-        queries::upsert_stress(db, &stress)?;
-        count += 1;
+        let rows = Self::daily_from_body(date, &summary_body, hrv_avg, body_battery)?;
+        count += Self::upsert_daily(db, &rows)?;
 
         Ok(count)
     }
+
+    /// Record a received body in `raw_responses` (see [`record_raw_response`]).
+    fn record(&self, db: &Database, endpoint: GarminEndpoint, key: &str, body: &str) -> Result<()> {
+        record_raw_response(
+            db,
+            self.raw_responses,
+            api::PROVIDER,
+            endpoint.name(),
+            key,
+            body,
+        )
+    }
+
+    /// Last-night HRV average from an HRV body. `None` when there is no body or it does not parse.
+    fn hrv_avg_from_body(body: Option<&str>) -> Option<f64> {
+        let resp = api::parse_body::<GarminHrvResponse>(GarminEndpoint::Hrv, body?).ok()?;
+        resp.hrv_summary.and_then(|s| s.last_night_avg)
+    }
+
+    /// `(charged, drained)` from a Body Battery body. The first item wins.
+    fn body_battery_from_body(body: &str) -> Result<(Option<i32>, Option<i32>)> {
+        let items: GarminBodyBatteryResponse = api::parse_body(GarminEndpoint::BodyBattery, body)?;
+        Ok(items
+            .into_iter()
+            .next()
+            .map(|item| (item.charged, item.drained))
+            .unwrap_or((None, None)))
+    }
+
+    /// Map a sleep body to a [`Sleep`] row, or `None` when the day has no sleep data.
+    fn sleep_from_body(date: NaiveDate, body: &str, hrv_avg: Option<f64>) -> Result<Option<Sleep>> {
+        let resp: GarminSleepResponse = api::parse_body(GarminEndpoint::Sleep, body)?;
+        Ok(Self::map_sleep(date, &resp, hrv_avg))
+    }
+
+    /// Map a daily-summary body to the heart, recovery, activity and stress rows.
+    fn daily_from_body(
+        date: NaiveDate,
+        body: &str,
+        hrv_avg: Option<f64>,
+        body_battery: (Option<i32>, Option<i32>),
+    ) -> Result<DailyRows> {
+        let summary: GarminDailySummaryResponse =
+            api::parse_body(GarminEndpoint::DailySummary, body)?;
+        Ok(DailyRows {
+            heart: Self::map_heart(date, &summary, hrv_avg),
+            recovery: Self::map_recovery(date, &summary, body_battery.0, body_battery.1),
+            activity: Self::map_activity(date, &summary),
+            stress: Self::map_stress(date, &summary),
+        })
+    }
+
+    /// Write the four daily rows. Returns the number of records written.
+    fn upsert_daily(db: &Database, rows: &DailyRows) -> Result<usize> {
+        queries::upsert_heart(db, &rows.heart)?;
+        queries::upsert_recovery(db, &rows.recovery)?;
+        queries::upsert_activity(db, &rows.activity)?;
+        queries::upsert_stress(db, &rows.stress)?;
+        Ok(4)
+    }
+}
+
+/// Refill sleep, heart, recovery, activity and stress from the Garmin bodies in `raw_responses`.
+/// No network. Dates without a stored sleep or daily-summary body are left as they are.
+/// A body that does not parse is reported in `errors`; a database error is returned.
+pub(crate) fn rebuild(db: &Database) -> Result<SyncReport> {
+    let stored = |endpoint: GarminEndpoint, key: &str| {
+        queries::get_raw_response(db, api::PROVIDER, endpoint.name(), key)
+    };
+
+    let mut keys = BTreeSet::new();
+    for endpoint in [GarminEndpoint::Sleep, GarminEndpoint::DailySummary] {
+        keys.extend(queries::raw_response_keys(
+            db,
+            api::PROVIDER,
+            endpoint.name(),
+        )?);
+    }
+
+    let mut records_synced = 0;
+    let mut errors = Vec::new();
+
+    for key in keys {
+        let Ok(date) = NaiveDate::parse_from_str(&key, "%Y-%m-%d") else {
+            errors.push(format!("{key}: not a YYYY-MM-DD date"));
+            continue;
+        };
+
+        let hrv_body = stored(GarminEndpoint::Hrv, &key)?;
+        let hrv_avg = GarminProvider::hrv_avg_from_body(hrv_body.as_deref());
+
+        if let Some(body) = stored(GarminEndpoint::Sleep, &key)? {
+            match GarminProvider::sleep_from_body(date, &body, hrv_avg) {
+                Ok(Some(sleep)) => {
+                    queries::upsert_sleep(db, &sleep)?;
+                    records_synced += 1;
+                }
+                Ok(None) => {}
+                Err(e) => errors.push(format!("{key} sleep: {e:#}")),
+            }
+        }
+
+        if let Some(body) = stored(GarminEndpoint::DailySummary, &key)? {
+            let body_battery = match stored(GarminEndpoint::BodyBattery, &key)? {
+                Some(bb_body) => {
+                    GarminProvider::body_battery_from_body(&bb_body).unwrap_or_else(|e| {
+                        errors.push(format!("{key} body battery: {e:#}"));
+                        (None, None)
+                    })
+                }
+                None => (None, None),
+            };
+            match GarminProvider::daily_from_body(date, &body, hrv_avg, body_battery) {
+                Ok(rows) => records_synced += GarminProvider::upsert_daily(db, &rows)?,
+                Err(e) => errors.push(format!("{key} daily summary: {e:#}")),
+            }
+        }
+    }
+
+    Ok(SyncReport {
+        provider: "garmin".into(),
+        records_synced,
+        errors,
+    })
 }
 
 #[cfg(test)]
@@ -436,5 +577,173 @@ mod tests {
             total_distance_meters: None,
             vo2_max_value: None,
         }
+    }
+
+    const DAY: &str = "2026-03-01";
+    const SLEEP_BODY: &str = r#"{"dailySleepDTO":{"sleepTimeInSeconds":28800,"deepSleepSeconds":7200,"remSleepSeconds":5400,"lightSleepSeconds":14400,"awakeSleepSeconds":1800,"sleepScores":{"overall":{"value":82}}},"sleepMovement":[{"activityLevel":0.5}]}"#;
+    const HRV_BODY: &str = r#"{"hrvSummary":{"lastNightAvg":42.5}}"#;
+    const SUMMARY_BODY: &str = r#"{"restingHeartRate":55,"maxHeartRate":142,"minHeartRate":48,"totalSteps":12345,"activeSeconds":3600,"floorsAscended":10,"averageStressLevel":35,"maxStressLevel":78,"bodyBatteryHighestValue":95,"bodyBatteryLowestValue":25,"vo2MaxValue":48.5,"totalKilocalories":2450.0}"#;
+    const BB_BODY: &str = r#"[{"charged":85,"drained":62}]"#;
+
+    fn day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+    }
+
+    fn store(db: &Database, endpoint: GarminEndpoint, key: &str, body: &str) {
+        queries::upsert_raw_response(db, api::PROVIDER, endpoint.name(), key, body).unwrap();
+    }
+
+    /// Number of rows in `table` for `date`.
+    fn rows_on(db: &Database, table: &str, date: &str) -> i64 {
+        db.conn()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE date = ?1"),
+                [date],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn with_raw_responses_sets_the_switch() {
+        assert!(GarminProvider::new().raw_responses);
+        assert!(
+            !GarminProvider::new()
+                .with_raw_responses(false)
+                .raw_responses
+        );
+    }
+
+    #[test]
+    fn hrv_avg_from_body_is_none_when_absent_or_unparseable() {
+        assert_eq!(GarminProvider::hrv_avg_from_body(None), None);
+        assert_eq!(GarminProvider::hrv_avg_from_body(Some("")), None);
+        assert_eq!(GarminProvider::hrv_avg_from_body(Some("[1]")), None);
+        assert_eq!(
+            GarminProvider::hrv_avg_from_body(Some(HRV_BODY)),
+            Some(42.5)
+        );
+    }
+
+    #[test]
+    fn sleep_from_body_maps_and_takes_hrv() {
+        let sleep = GarminProvider::sleep_from_body(day(), SLEEP_BODY, Some(42.5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(sleep.sleep_score, Some(82));
+        assert_eq!(sleep.hrv_ms, Some(42.5));
+        assert_eq!(sleep.total_seconds, 28800);
+    }
+
+    #[test]
+    fn sleep_from_body_is_none_without_sleep_data() {
+        let sleep =
+            GarminProvider::sleep_from_body(day(), r#"{"dailySleepDTO":null}"#, None).unwrap();
+        assert!(sleep.is_none());
+    }
+
+    #[test]
+    fn sleep_from_body_errors_on_a_body_of_the_wrong_shape() {
+        assert!(GarminProvider::sleep_from_body(day(), r#"{"dailySleepDTO":5}"#, None).is_err());
+    }
+
+    #[test]
+    fn daily_from_body_maps_all_four_rows() {
+        let rows =
+            GarminProvider::daily_from_body(day(), SUMMARY_BODY, Some(42.5), (Some(85), Some(62)))
+                .unwrap();
+        assert_eq!(rows.heart.resting_hr, Some(55));
+        assert_eq!(rows.heart.hrv_avg, Some(42.5));
+        assert_eq!(rows.recovery.body_battery_peak, Some(95));
+        assert_eq!(rows.recovery.body_battery_charged, Some(85));
+        assert_eq!(rows.activity.steps, Some(12345));
+        assert_eq!(rows.stress.max_stress, Some(78));
+    }
+
+    #[test]
+    fn rebuild_refills_the_daily_tables_from_stored_bodies() {
+        let db = Database::open_memory().unwrap();
+        store(&db, GarminEndpoint::Sleep, DAY, SLEEP_BODY);
+        store(&db, GarminEndpoint::Hrv, DAY, HRV_BODY);
+        store(&db, GarminEndpoint::DailySummary, DAY, SUMMARY_BODY);
+        store(&db, GarminEndpoint::BodyBattery, DAY, BB_BODY);
+
+        let report = rebuild(&db).unwrap();
+
+        assert_eq!(report.provider, "garmin");
+        assert_eq!(report.records_synced, 5);
+        assert!(report.errors.is_empty());
+        for table in ["sleep", "heart", "recovery", "activity", "stress"] {
+            assert_eq!(rows_on(&db, table, DAY), 1, "{table}");
+        }
+        let sleep = queries::get_sleep(&db, DAY).unwrap().unwrap();
+        assert_eq!(sleep.hrv_ms, Some(42.5));
+        let vo2_max: Option<f64> = db
+            .conn()
+            .query_row("SELECT vo2_max FROM heart WHERE date = ?1", [DAY], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(vo2_max, Some(48.5));
+        let drained: Option<i32> = db
+            .conn()
+            .query_row(
+                "SELECT body_battery_drained FROM recovery WHERE date = ?1",
+                [DAY],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(drained, Some(62));
+    }
+
+    #[test]
+    fn rebuild_replaces_rows_from_the_stored_body() {
+        let db = Database::open_memory().unwrap();
+        let mut sleep = GarminProvider::sleep_from_body(day(), SLEEP_BODY, None)
+            .unwrap()
+            .unwrap();
+        sleep.sleep_score = Some(70);
+        queries::upsert_sleep(&db, &sleep).unwrap();
+        store(&db, GarminEndpoint::Sleep, DAY, SLEEP_BODY);
+
+        rebuild(&db).unwrap();
+
+        let rebuilt = queries::get_sleep(&db, DAY).unwrap().unwrap();
+        assert_eq!(rebuilt.sleep_score, Some(82));
+    }
+
+    #[test]
+    fn rebuild_leaves_days_without_a_body_alone() {
+        let db = Database::open_memory().unwrap();
+        let mut sleep = GarminProvider::sleep_from_body(day(), SLEEP_BODY, None)
+            .unwrap()
+            .unwrap();
+        sleep.date = "2026-02-01".into();
+        queries::upsert_sleep(&db, &sleep).unwrap();
+
+        let report = rebuild(&db).unwrap();
+
+        assert_eq!(report.records_synced, 0);
+        let kept = queries::get_sleep(&db, "2026-02-01").unwrap().unwrap();
+        assert_eq!(kept.sleep_score, Some(82));
+    }
+
+    #[test]
+    fn rebuild_reports_a_body_that_does_not_parse_and_continues() {
+        let db = Database::open_memory().unwrap();
+        store(
+            &db,
+            GarminEndpoint::Sleep,
+            "2026-03-02",
+            r#"{"dailySleepDTO":5}"#,
+        );
+        store(&db, GarminEndpoint::Sleep, DAY, SLEEP_BODY);
+
+        let report = rebuild(&db).unwrap();
+
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].starts_with("2026-03-02 sleep:"));
+        assert_eq!(rows_on(&db, "sleep", DAY), 1);
+        assert_eq!(report.records_synced, 1);
     }
 }

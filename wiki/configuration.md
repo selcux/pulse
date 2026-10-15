@@ -57,3 +57,16 @@ enabled = true
 athlete_id = "i12345"
 api_key = "your-api-key"
 ```
+
+## `[storage]`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `raw_responses` | bool | `true` | Keep each provider response body in the database, so later versions can fill new columns and `pulse rebuild` can refill the tables without a re-sync. When off, a day synced again also loses the body stored for it earlier. |
+
+```toml
+[storage]
+raw_responses = true
+```
+
+Roughly 25 to 90 MB a year, mostly Garmin sleep data.

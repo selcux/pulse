@@ -41,6 +41,8 @@ enum Commands {
         #[arg(short, long, default_value_t = 1)]
         days: u32,
     },
+    /// Refill the data tables from stored provider responses (no network)
+    Rebuild,
     /// Show sleep duration, stages, and scores
     Sleep {
         #[arg(short, long, default_value_t = 7)]
@@ -109,6 +111,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::GarminLogin { username, mfa } => cmd_garmin_login(username, mfa),
         Commands::Sync { provider, days } => cmd_sync(provider, days),
+        Commands::Rebuild => cmd_rebuild(),
         Commands::Sleep { days, output } => cmd_sleep(days, output.format()),
         Commands::Heart { days, output } => cmd_heart(days, output.format()),
         Commands::Recovery { days, output } => cmd_recovery(days, output.format()),
@@ -156,6 +159,9 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
 
+    // The first sync that stores a response says so once; no state is kept for it.
+    let store_was_empty = cfg.storage.raw_responses && queries::count_raw_responses(&db)? == 0;
+
     match provider {
         Some(name) => {
             println!("Syncing {}...", name);
@@ -191,6 +197,38 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
             }
         }
     }
+
+    if store_was_empty && queries::count_raw_responses(&db)? > 0 {
+        println!(
+            "\nNote: pulse now keeps each provider response, so later versions can fill new columns without a re-sync.\n\
+             Days synced before this version have none. To cover them, sync them once: pulse sync --days N"
+        );
+    }
+
+    Ok(())
+}
+
+fn cmd_rebuild() -> anyhow::Result<()> {
+    let db = Database::open()?;
+    let report = sync::rebuild_all(&db)?;
+
+    if report.total_synced == 0 && report.total_errors == 0 {
+        println!("Nothing to rebuild: no stored provider responses.");
+        println!("`pulse sync` stores them while `[storage] raw_responses` is on (the default).");
+        println!("To cover older days, sync them once: pulse sync --days N");
+        return Ok(());
+    }
+
+    for r in &report.reports {
+        println!("Rebuilding {}... {} records", r.provider, r.records_synced);
+        for err in &r.errors {
+            println!("  error: {}", err);
+        }
+    }
+    println!(
+        "Rebuild complete: {} records, {} error(s)",
+        report.total_synced, report.total_errors
+    );
 
     Ok(())
 }
@@ -810,10 +848,22 @@ mod tests {
             vec!["pulse", "sync", "--format", "json"],
             vec!["pulse", "sync", "--json"],
             vec!["pulse", "--format", "json", "sleep"],
+            vec!["pulse", "rebuild", "--json"],
         ];
         for args in rejected {
             let kind = Cli::try_parse_from(&args).map_err(|e| e.kind()).err();
             assert_eq!(kind, Some(ErrorKind::UnknownArgument), "{args:?}");
         }
+    }
+
+    #[test]
+    fn rebuild_takes_no_arguments() {
+        let cli = Cli::try_parse_from(["pulse", "rebuild"]).unwrap();
+        assert!(matches!(cli.command, Commands::Rebuild));
+
+        let kind = Cli::try_parse_from(["pulse", "rebuild", "garmin"])
+            .map(|_| ())
+            .map_err(|e| e.kind());
+        assert_eq!(kind, Err(ErrorKind::UnknownArgument));
     }
 }

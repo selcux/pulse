@@ -364,6 +364,71 @@ pub fn delete_exercise_sets_for_workout(db: &Database, workout_id: &str) -> Resu
 }
 
 // ---------------------------------------------------------------------------
+// Raw responses
+// ---------------------------------------------------------------------------
+
+/// Insert or replace the stored response body for `(provider, endpoint, key)`.
+/// `fetched_at` is set to the current UTC time. `body` must be valid JSON (the table checks it).
+pub fn upsert_raw_response(
+    db: &Database,
+    provider: &str,
+    endpoint: &str,
+    key: &str,
+    body: &str,
+) -> Result<()> {
+    db.conn().execute(
+        "INSERT OR REPLACE INTO raw_responses (provider, endpoint, key, body) VALUES (?1, ?2, ?3, ?4)",
+        params![provider, endpoint, key, body],
+    )?;
+    Ok(())
+}
+
+/// Return the stored response body for `(provider, endpoint, key)`, or `None`.
+pub fn get_raw_response(
+    db: &Database,
+    provider: &str,
+    endpoint: &str,
+    key: &str,
+) -> Result<Option<String>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT body FROM raw_responses WHERE provider = ?1 AND endpoint = ?2 AND key = ?3",
+    )?;
+    let body = stmt
+        .query_row(params![provider, endpoint, key], |row| row.get(0))
+        .optional()?;
+    Ok(body)
+}
+
+/// Delete the stored response body for `(provider, endpoint, key)`, if there is one.
+pub fn delete_raw_response(db: &Database, provider: &str, endpoint: &str, key: &str) -> Result<()> {
+    db.conn().execute(
+        "DELETE FROM raw_responses WHERE provider = ?1 AND endpoint = ?2 AND key = ?3",
+        params![provider, endpoint, key],
+    )?;
+    Ok(())
+}
+
+/// Return the keys stored for `provider` and `endpoint`, in ascending order.
+pub fn raw_response_keys(db: &Database, provider: &str, endpoint: &str) -> Result<Vec<String>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT key FROM raw_responses WHERE provider = ?1 AND endpoint = ?2 ORDER BY key",
+    )?;
+    // Row errors propagate: a dropped key would be a day silently left out of a rebuild.
+    let keys = stmt
+        .query_map(params![provider, endpoint], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(keys)
+}
+
+/// Return the number of stored response bodies, across all providers.
+pub fn count_raw_responses(db: &Database) -> Result<i64> {
+    let count = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM raw_responses", [], |row| row.get(0))?;
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
 // Sync State
 // ---------------------------------------------------------------------------
 
@@ -403,6 +468,68 @@ mod tests {
     fn migrations_run_without_error() {
         let _db = test_db();
         // If we get here, migrations succeeded.
+    }
+
+    #[test]
+    fn raw_response_upsert_and_get() {
+        let db = test_db();
+        upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", r#"{"a":1}"#).unwrap();
+        assert_eq!(
+            get_raw_response(&db, "garmin", "sleep", "2026-03-01")
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"a":1}"#)
+        );
+        assert!(
+            get_raw_response(&db, "garmin", "hrv", "2026-03-01")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            get_raw_response(&db, "garmin", "sleep", "2026-03-02")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn raw_response_upsert_replaces() {
+        let db = test_db();
+        upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", r#"{"a":1}"#).unwrap();
+        upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", r#"{"a":2}"#).unwrap();
+        assert_eq!(
+            get_raw_response(&db, "garmin", "sleep", "2026-03-01")
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"a":2}"#)
+        );
+        assert_eq!(count_raw_responses(&db).unwrap(), 1);
+    }
+
+    #[test]
+    fn raw_response_delete() {
+        let db = test_db();
+        upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", "{}").unwrap();
+        delete_raw_response(&db, "garmin", "sleep", "2026-03-01").unwrap();
+        assert!(
+            get_raw_response(&db, "garmin", "sleep", "2026-03-01")
+                .unwrap()
+                .is_none()
+        );
+        delete_raw_response(&db, "garmin", "sleep", "2026-03-01").unwrap();
+    }
+
+    #[test]
+    fn raw_response_keys_are_scoped_and_sorted() {
+        let db = test_db();
+        upsert_raw_response(&db, "garmin", "sleep", "2026-03-02", "{}").unwrap();
+        upsert_raw_response(&db, "garmin", "sleep", "2026-03-01", "{}").unwrap();
+        upsert_raw_response(&db, "garmin", "hrv", "2026-03-05", "{}").unwrap();
+        upsert_raw_response(&db, "intervals", "activity", "i1", "{}").unwrap();
+        assert_eq!(
+            raw_response_keys(&db, "garmin", "sleep").unwrap(),
+            vec!["2026-03-01".to_string(), "2026-03-02".to_string()]
+        );
     }
 
     #[test]

@@ -6,11 +6,11 @@
 pub mod garmin;
 pub mod intervals;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::db::Database;
+use crate::db::{Database, queries};
 
 /// Identifies a category of health metric that a provider can supply.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,12 +38,12 @@ pub struct DateRange {
     pub end: NaiveDate,
 }
 
-/// Summary of a single provider's sync run.
+/// Summary of a single provider's sync or rebuild run.
 #[derive(Debug, Clone)]
 pub struct SyncReport {
     /// Human-readable provider name (matches [`Provider::name`]).
     pub provider: String,
-    /// Total number of records written to the database.
+    /// Number of mapped records written to the database.
     pub records_synced: usize,
     /// Non-fatal error messages collected during the sync.
     pub errors: Vec<String>,
@@ -63,4 +63,74 @@ pub trait Provider {
 
     /// The subset of [`MetricType`]s this provider can supply.
     fn supported_metrics(&self) -> &[MetricType];
+}
+
+/// Keep `raw_responses` in step with a body just received with a 2xx status.
+///
+/// Stores `body` under `(provider, endpoint, key)` when `enabled` and the body is JSON, replacing
+/// any earlier body. Otherwise removes the body stored earlier under that key, so the store never
+/// holds a body older than the rows mapped from the latest fetch. Call it before mapping the body.
+pub(crate) fn record_raw_response(
+    db: &Database,
+    enabled: bool,
+    provider: &str,
+    endpoint: &str,
+    key: &str,
+    body: &str,
+) -> Result<()> {
+    let is_json = serde_json::from_str::<serde::de::IgnoredAny>(body).is_ok();
+    if enabled && is_json {
+        queries::upsert_raw_response(db, provider, endpoint, key, body)
+            .with_context(|| format!("Failed to store {provider} {endpoint} response for {key}"))
+    } else {
+        queries::delete_raw_response(db, provider, endpoint, key).with_context(|| {
+            format!("Failed to remove stored {provider} {endpoint} response for {key}")
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored(db: &Database) -> Option<String> {
+        queries::get_raw_response(db, "garmin", "sleep", "2026-03-01").unwrap()
+    }
+
+    fn record(db: &Database, enabled: bool, body: &str) {
+        record_raw_response(db, enabled, "garmin", "sleep", "2026-03-01", body).unwrap();
+    }
+
+    #[test]
+    fn record_stores_a_json_body_when_on() {
+        let db = Database::open_memory().unwrap();
+        record(&db, true, r#"{"a":1}"#);
+        assert_eq!(stored(&db).as_deref(), Some(r#"{"a":1}"#));
+    }
+
+    #[test]
+    fn record_replaces_the_previous_body() {
+        let db = Database::open_memory().unwrap();
+        record(&db, true, r#"{"a":1}"#);
+        record(&db, true, r#"{"a":2}"#);
+        assert_eq!(stored(&db).as_deref(), Some(r#"{"a":2}"#));
+    }
+
+    #[test]
+    fn record_when_off_stores_nothing_and_removes_the_previous_body() {
+        let db = Database::open_memory().unwrap();
+        record(&db, true, r#"{"a":1}"#);
+        record(&db, false, r#"{"a":2}"#);
+        assert!(stored(&db).is_none());
+    }
+
+    #[test]
+    fn record_does_not_store_a_body_that_is_not_json() {
+        let db = Database::open_memory().unwrap();
+        record(&db, true, r#"{"a":1}"#);
+        record(&db, true, "");
+        assert!(stored(&db).is_none());
+        record(&db, true, "<html>");
+        assert!(stored(&db).is_none());
+    }
 }

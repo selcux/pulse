@@ -7,6 +7,7 @@
 | `pulse config [init]` | — | Show current config, or `init` to create defaults |
 | `pulse garmin-login` | `-u EMAIL`, `--mfa CODE` | Authenticate with Garmin Connect |
 | `pulse sync [provider]` | `--days N` | Sync from all providers, or a specific one (`garmin`, `intervals`) |
+| `pulse rebuild` | — | Refill the data tables from stored provider responses, without network access |
 | `pulse vitality` | `--days N`, `--format FMT`, `--json` | Daily vitality score table |
 | `pulse sleep` | `--days N`, `--format FMT`, `--json` | Sleep data table |
 | `pulse heart` | `--days N`, `--format FMT`, `--json` | Heart rate data |

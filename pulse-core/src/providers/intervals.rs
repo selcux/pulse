@@ -1,13 +1,17 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::config::IntervalsConfig;
 use crate::db::Database;
 use crate::db::queries;
 use crate::models::{ExerciseSet, Workout};
-use crate::providers::garmin::{api::GarminApi, auth, tokens};
-use crate::providers::{DateRange, MetricType, Provider, SyncReport};
+use crate::providers::garmin::api::{
+    self, GarminApi, GarminEndpoint, GarminExerciseSetsResponse, parse_body,
+};
+use crate::providers::garmin::{auth, tokens};
+use crate::providers::{DateRange, MetricType, Provider, SyncReport, record_raw_response};
 
 const BASE_URL: &str = "https://intervals.icu/api/v1";
 
@@ -99,9 +103,113 @@ fn map_garmin_exercise_sets(
 // Provider implementation
 // ---------------------------------------------------------------------------
 
+/// Value of `raw_responses.provider` for Intervals.icu bodies.
+const PROVIDER: &str = "intervals";
+
+/// `raw_responses.endpoint` for one activity object from the activities list.
+/// Never change it once released: stored rows and migrations refer to it.
+const ACTIVITY_ENDPOINT: &str = "activity";
+
 pub struct IntervalsProvider {
     config: IntervalsConfig,
     client: reqwest::blocking::Client,
+    raw_responses: bool,
+}
+
+/// One activity object from the activities list, as received.
+#[derive(Debug, PartialEq)]
+struct ActivityBody {
+    id: String,
+    body: String,
+}
+
+/// Just the `id` of an activity, so the rest of the object can be kept as received.
+#[derive(Deserialize)]
+struct ActivityId {
+    id: String,
+}
+
+/// Split an activities-list body into its activity objects, each kept as received.
+/// Errors when the body is not a JSON array or an object has no string `id`.
+fn split_activities(list_body: &str) -> Result<Vec<ActivityBody>> {
+    let items: Vec<Box<RawValue>> =
+        serde_json::from_str(list_body).context("Activities list is not a JSON array")?;
+    items
+        .into_iter()
+        .map(|item| {
+            let ActivityId { id } =
+                serde_json::from_str(item.get()).context("Activity has no string id")?;
+            Ok(ActivityBody {
+                id,
+                body: item.get().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Parse one activity body, fresh or stored.
+fn parse_activity(body: &str) -> Result<ApiActivity> {
+    serde_json::from_str(body).context("Failed to parse Intervals.icu activity")
+}
+
+/// Map a Garmin exercise-sets body, fresh or stored, to our sets for `workout_id`.
+fn sets_from_body(workout_id: &str, body: &str) -> Result<Vec<ExerciseSet>> {
+    let resp: GarminExerciseSetsResponse = parse_body(GarminEndpoint::ExerciseSets, body)?;
+    Ok(map_garmin_exercise_sets(workout_id, &resp.exercise_sets))
+}
+
+/// Refill workouts and exercise sets from the bodies in `raw_responses`. No network.
+///
+/// An activity whose exercise-sets body is not stored keeps the sets it has. A body that does
+/// not parse is reported in `errors`; a database error is returned.
+pub(crate) fn rebuild(db: &Database) -> Result<SyncReport> {
+    let mut report = SyncReport {
+        provider: "intervals".to_string(),
+        records_synced: 0,
+        errors: Vec::new(),
+    };
+
+    for key in queries::raw_response_keys(db, PROVIDER, ACTIVITY_ENDPOINT)? {
+        let Some(body) = queries::get_raw_response(db, PROVIDER, ACTIVITY_ENDPOINT, &key)? else {
+            continue;
+        };
+        let activity = match parse_activity(&body) {
+            Ok(activity) => activity,
+            Err(e) => {
+                report.errors.push(format!("activity {key}: {e:#}"));
+                continue;
+            }
+        };
+
+        queries::upsert_workout(db, &IntervalsProvider::map_workout(&activity))?;
+        report.records_synced += 1;
+
+        let activity_type = activity.activity_type.as_deref().unwrap_or("");
+        if IntervalsProvider::is_strength_activity(activity_type)
+            && let Some(garmin_id) = &activity.external_id
+            && let Some(sets_body) = queries::get_raw_response(
+                db,
+                api::PROVIDER,
+                GarminEndpoint::ExerciseSets.name(),
+                garmin_id,
+            )?
+        {
+            match sets_from_body(&activity.id, &sets_body) {
+                Ok(sets) => {
+                    queries::delete_exercise_sets_for_workout(db, &activity.id)?;
+                    for set in &sets {
+                        queries::insert_exercise_set(db, set)?;
+                    }
+                    report.records_synced += sets.len();
+                }
+                Err(e) => report
+                    .errors
+                    .push(format!("exercise sets for {key}: {e:#}")),
+            }
+        }
+    }
+
+    Ok(report)
 }
 
 impl IntervalsProvider {
@@ -109,11 +217,18 @@ impl IntervalsProvider {
         Self {
             config,
             client: reqwest::blocking::Client::new(),
+            raw_responses: true,
         }
     }
 
-    /// Fetch the activities list for a date range.
-    fn fetch_activities(&self, range: &DateRange) -> Result<Vec<ApiActivity>> {
+    /// Keep (`true`, the default) or stop keeping each response body in `raw_responses`.
+    pub fn with_raw_responses(mut self, enabled: bool) -> Self {
+        self.raw_responses = enabled;
+        self
+    }
+
+    /// Fetch the activities list for a date range, one body per activity.
+    fn fetch_activity_bodies(&self, range: &DateRange) -> Result<Vec<ActivityBody>> {
         let athlete_id = if self.config.athlete_id.is_empty() {
             "0"
         } else {
@@ -135,11 +250,11 @@ impl IntervalsProvider {
             .error_for_status()
             .context("Intervals.icu activities endpoint returned an error")?;
 
-        let activities: Vec<ApiActivity> = resp
-            .json()
-            .context("Failed to deserialize Intervals.icu activities response")?;
+        let text = resp
+            .text()
+            .context("Failed to read Intervals.icu activities response")?;
 
-        Ok(activities)
+        split_activities(&text).context("Failed to deserialize Intervals.icu activities response")
     }
 
     /// Returns true if the activity type looks like a strength/weight training workout.
@@ -177,11 +292,35 @@ impl Provider for IntervalsProvider {
         };
 
         // 1. Fetch activities list for date range
-        let activities = self.fetch_activities(range)?;
+        let activities = self.fetch_activity_bodies(range)?;
 
-        for api_activity in &activities {
+        for item in &activities {
+            // Store the body before mapping it, so a mapped row is never newer than its body.
+            if let Err(e) = record_raw_response(
+                db,
+                self.raw_responses,
+                PROVIDER,
+                ACTIVITY_ENDPOINT,
+                &item.id,
+                &item.body,
+            ) {
+                report
+                    .errors
+                    .push(format!("Failed to store response for {}: {e}", item.id));
+                continue;
+            }
+            let api_activity = match parse_activity(&item.body) {
+                Ok(activity) => activity,
+                Err(e) => {
+                    report
+                        .errors
+                        .push(format!("Failed to parse activity {}: {e:#}", item.id));
+                    continue;
+                }
+            };
+
             // 2. Map and upsert the workout
-            let workout = Self::map_workout(api_activity);
+            let workout = Self::map_workout(&api_activity);
             if let Err(e) = queries::upsert_workout(db, &workout) {
                 report
                     .errors
@@ -199,8 +338,32 @@ impl Provider for IntervalsProvider {
                 match auth::ensure_valid_token(&self.client) {
                     Ok(token) => {
                         let garmin_api = GarminApi::new(&self.client, token);
-                        match garmin_api.fetch_exercise_sets(garmin_id) {
-                            Ok(resp) => {
+                        match garmin_api.fetch_body(GarminEndpoint::ExerciseSets, garmin_id) {
+                            Ok(body) => {
+                                if let Err(e) = record_raw_response(
+                                    db,
+                                    self.raw_responses,
+                                    api::PROVIDER,
+                                    GarminEndpoint::ExerciseSets.name(),
+                                    garmin_id,
+                                    &body,
+                                ) {
+                                    report.errors.push(format!(
+                                        "Failed to store exercise sets response for {}: {e}",
+                                        api_activity.id
+                                    ));
+                                    continue;
+                                }
+                                let sets = match sets_from_body(&api_activity.id, &body) {
+                                    Ok(sets) => sets,
+                                    Err(e) => {
+                                        report.errors.push(format!(
+                                            "Failed to parse exercise sets for {}: {e:#}",
+                                            api_activity.id
+                                        ));
+                                        continue;
+                                    }
+                                };
                                 if let Err(e) =
                                     queries::delete_exercise_sets_for_workout(db, &api_activity.id)
                                 {
@@ -210,8 +373,6 @@ impl Provider for IntervalsProvider {
                                     ));
                                     continue;
                                 }
-                                let sets =
-                                    map_garmin_exercise_sets(&api_activity.id, &resp.exercise_sets);
                                 for set in &sets {
                                     if let Err(e) = queries::insert_exercise_set(db, set) {
                                         report.errors.push(format!(
@@ -457,5 +618,141 @@ mod tests {
         // A set without labels is still a set.
         assert_eq!(sets[1].set_order, 2);
         assert_eq!(sets[1].repetitions, Some(10));
+    }
+
+    const ACTIVITIES_BODY: &str = r#"[
+  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"external_id":"22005844470","icu_ftp":1.50},
+  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "distance": 5012.5}
+]"#;
+    const SETS_BODY: &str = r#"{"exerciseSets":[{"exercises":[{"category":"BENCH_PRESS","name":"BARBELL_BENCH_PRESS"}],"repetitionCount":10,"weight":60000.0,"setType":"ACTIVE"},{"exercises":[],"setType":"REST"}]}"#;
+
+    /// The exact text of one activity object inside `ACTIVITIES_BODY`.
+    fn slice_of_list(start_marker: &str, end_marker: &str) -> &'static str {
+        let start = ACTIVITIES_BODY.find(start_marker).unwrap();
+        let end = ACTIVITIES_BODY.find(end_marker).unwrap() + end_marker.len();
+        &ACTIVITIES_BODY[start..end]
+    }
+
+    fn store_activities(db: &Database) {
+        for item in split_activities(ACTIVITIES_BODY).unwrap() {
+            queries::upsert_raw_response(db, PROVIDER, ACTIVITY_ENDPOINT, &item.id, &item.body)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn split_activities_keeps_each_object_as_received() {
+        let items = split_activities(ACTIVITIES_BODY).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, "i101");
+        assert_eq!(
+            items[0].body,
+            slice_of_list(r#"{"id":"i101""#, r#""icu_ftp":1.50}"#)
+        );
+        assert!(items[0].body.contains("1.50"));
+        assert_eq!(items[1].id, "i102");
+        assert_eq!(
+            items[1].body,
+            slice_of_list(r#"{"id": "i102""#, r#""distance": 5012.5}"#)
+        );
+    }
+
+    #[test]
+    fn split_activities_rejects_a_body_that_is_not_an_array() {
+        assert!(split_activities(r#"{"id":"i1"}"#).is_err());
+    }
+
+    #[test]
+    fn split_activities_rejects_an_object_without_an_id() {
+        assert!(split_activities(r#"[{"name":"x"}]"#).is_err());
+    }
+
+    #[test]
+    fn sets_from_body_maps_and_drops_rest_sets() {
+        let sets = sets_from_body("i101", SETS_BODY).unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(
+            sets[0].exercise_name.as_deref(),
+            Some("Barbell Bench Press")
+        );
+        assert_eq!(sets[0].weight_kg, Some(60.0));
+    }
+
+    #[test]
+    fn with_raw_responses_sets_the_switch() {
+        let config = IntervalsConfig {
+            enabled: true,
+            api_key: "test-key".into(),
+            athlete_id: "0".into(),
+        };
+        assert!(IntervalsProvider::new(config.clone()).raw_responses);
+        assert!(
+            !IntervalsProvider::new(config)
+                .with_raw_responses(false)
+                .raw_responses
+        );
+    }
+
+    #[test]
+    fn rebuild_refills_workouts_and_sets() {
+        let db = Database::open_memory().unwrap();
+        store_activities(&db);
+        queries::upsert_raw_response(
+            &db,
+            api::PROVIDER,
+            GarminEndpoint::ExerciseSets.name(),
+            "22005844470",
+            SETS_BODY,
+        )
+        .unwrap();
+
+        let report = rebuild(&db).unwrap();
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.records_synced, 3);
+        let calories: Option<i32> = db
+            .conn()
+            .query_row("SELECT calories FROM workouts WHERE id = 'i101'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(calories, Some(350));
+        let activity_type: String = db
+            .conn()
+            .query_row(
+                "SELECT activity_type FROM workouts WHERE id = 'i102'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(activity_type, "Run");
+        assert_eq!(queries::query_exercise_sets(&db, "i101").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rebuild_keeps_sets_when_their_body_is_not_stored() {
+        let db = Database::open_memory().unwrap();
+        let items = split_activities(ACTIVITIES_BODY).unwrap();
+        let activity = parse_activity(&items[0].body).unwrap();
+        queries::upsert_workout(&db, &IntervalsProvider::map_workout(&activity)).unwrap();
+        queries::insert_exercise_set(
+            &db,
+            &ExerciseSet {
+                id: None,
+                workout_id: "i101".into(),
+                set_order: 1,
+                exercise_category: None,
+                exercise_name: Some("Squat".into()),
+                repetitions: Some(5),
+                weight_kg: Some(100.0),
+            },
+        )
+        .unwrap();
+        queries::upsert_raw_response(&db, PROVIDER, ACTIVITY_ENDPOINT, "i101", &items[0].body)
+            .unwrap();
+
+        rebuild(&db).unwrap();
+
+        assert_eq!(queries::query_exercise_sets(&db, "i101").unwrap().len(), 1);
     }
 }

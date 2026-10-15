@@ -147,42 +147,46 @@ impl<'a> GarminApi<'a> {
         }
     }
 
+    /// Fetch and parse the sleep response for `date`.
     pub fn fetch_sleep(&self, date: NaiveDate) -> Result<GarminSleepResponse> {
-        let url = format!("{CONNECT_API}/sleep-service/sleep/dailySleepData?date={date}");
-        self.get_json(&url, "sleep")
+        let endpoint = GarminEndpoint::Sleep;
+        parse_body(endpoint, &self.fetch_body(endpoint, &date.to_string())?)
     }
 
+    /// Fetch and parse the HRV response for `date`.
     pub fn fetch_hrv(&self, date: NaiveDate) -> Result<GarminHrvResponse> {
-        let url = format!("{CONNECT_API}/hrv-service/hrv/{date}");
-        self.get_json(&url, "HRV")
+        let endpoint = GarminEndpoint::Hrv;
+        parse_body(endpoint, &self.fetch_body(endpoint, &date.to_string())?)
     }
 
+    /// Fetch and parse the Body Battery report for `date`.
     pub fn fetch_body_battery(&self, date: NaiveDate) -> Result<GarminBodyBatteryResponse> {
-        let url = format!(
-            "{CONNECT_API}/wellness-service/wellness/bodyBattery/reports/daily?startDate={date}&endDate={date}"
-        );
-        self.get_json(&url, "body battery")
+        let endpoint = GarminEndpoint::BodyBattery;
+        parse_body(endpoint, &self.fetch_body(endpoint, &date.to_string())?)
     }
 
+    /// Fetch and parse the daily summary for `date`.
     pub fn fetch_daily_summary(&self, date: NaiveDate) -> Result<GarminDailySummaryResponse> {
-        let url =
-            format!("{CONNECT_API}/usersummary-service/usersummary/daily/?calendarDate={date}");
-        self.get_json(&url, "daily summary")
+        let endpoint = GarminEndpoint::DailySummary;
+        parse_body(endpoint, &self.fetch_body(endpoint, &date.to_string())?)
     }
 
+    /// Fetch and parse the exercise sets of the Garmin activity `garmin_activity_id`.
     pub fn fetch_exercise_sets(
         &self,
         garmin_activity_id: &str,
     ) -> Result<GarminExerciseSetsResponse> {
-        let url =
-            format!("{CONNECT_API}/activity-service/activity/{garmin_activity_id}/exerciseSets");
-        self.get_json(&url, "exercise sets")
+        let endpoint = GarminEndpoint::ExerciseSets;
+        parse_body(endpoint, &self.fetch_body(endpoint, garmin_activity_id)?)
     }
 
-    fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str, label: &str) -> Result<T> {
+    /// Fetch the body of `endpoint` for `key` as received. Errors on a transport failure,
+    /// a non-2xx status, or a body that cannot be read.
+    pub(crate) fn fetch_body(&self, endpoint: GarminEndpoint, key: &str) -> Result<String> {
+        let label = endpoint.label();
         let resp = self
             .client
-            .get(url)
+            .get(endpoint.url(key))
             .header("Authorization", format!("Bearer {}", self.access_token))
             .send()
             .with_context(|| format!("Failed to fetch {label}"))?;
@@ -193,15 +197,120 @@ impl<'a> GarminApi<'a> {
             bail!("Garmin {label} API returned {status}: {body}");
         }
 
-        let body_text = resp.text().unwrap_or_default();
-        serde_json::from_str::<T>(&body_text)
-            .with_context(|| format!("Failed to parse {label} response"))
+        resp.text()
+            .with_context(|| format!("Failed to read {label} response"))
     }
+}
+
+/// Value of `raw_responses.provider` for bodies returned by Garmin Connect.
+pub(crate) const PROVIDER: &str = "garmin";
+
+/// A Garmin Connect endpoint pulse fetches. Its `name` is stored in `raw_responses.endpoint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GarminEndpoint {
+    Sleep,
+    Hrv,
+    BodyBattery,
+    DailySummary,
+    ExerciseSets,
+}
+
+impl GarminEndpoint {
+    /// Stored in `raw_responses.endpoint`. Never change a value once released:
+    /// stored rows and migrations refer to it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Sleep => "sleep",
+            Self::Hrv => "hrv",
+            Self::BodyBattery => "body_battery",
+            Self::DailySummary => "daily_summary",
+            Self::ExerciseSets => "exercise_sets",
+        }
+    }
+
+    /// Used in error messages.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sleep => "sleep",
+            Self::Hrv => "HRV",
+            Self::BodyBattery => "body battery",
+            Self::DailySummary => "daily summary",
+            Self::ExerciseSets => "exercise sets",
+        }
+    }
+
+    /// `key` is a `YYYY-MM-DD` date, or the Garmin activity id for `ExerciseSets`.
+    fn url(self, key: &str) -> String {
+        match self {
+            Self::Sleep => {
+                format!("{CONNECT_API}/sleep-service/sleep/dailySleepData?date={key}")
+            }
+            Self::Hrv => format!("{CONNECT_API}/hrv-service/hrv/{key}"),
+            Self::BodyBattery => format!(
+                "{CONNECT_API}/wellness-service/wellness/bodyBattery/reports/daily?startDate={key}&endDate={key}"
+            ),
+            Self::DailySummary => {
+                format!("{CONNECT_API}/usersummary-service/usersummary/daily/?calendarDate={key}")
+            }
+            Self::ExerciseSets => {
+                format!("{CONNECT_API}/activity-service/activity/{key}/exerciseSets")
+            }
+        }
+    }
+}
+
+/// Deserialize a Garmin body, fresh or stored. Errors with "Failed to parse {label} response".
+pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(
+    endpoint: GarminEndpoint,
+    body: &str,
+) -> Result<T> {
+    serde_json::from_str(body)
+        .with_context(|| format!("Failed to parse {} response", endpoint.label()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_names_are_stable() {
+        assert_eq!(GarminEndpoint::Sleep.name(), "sleep");
+        assert_eq!(GarminEndpoint::Hrv.name(), "hrv");
+        assert_eq!(GarminEndpoint::BodyBattery.name(), "body_battery");
+        assert_eq!(GarminEndpoint::DailySummary.name(), "daily_summary");
+        assert_eq!(GarminEndpoint::ExerciseSets.name(), "exercise_sets");
+        assert_eq!(PROVIDER, "garmin");
+    }
+
+    #[test]
+    fn endpoint_urls_are_unchanged() {
+        assert_eq!(
+            GarminEndpoint::Sleep.url("2026-03-01"),
+            "https://connectapi.garmin.com/sleep-service/sleep/dailySleepData?date=2026-03-01"
+        );
+        assert_eq!(
+            GarminEndpoint::Hrv.url("2026-03-01"),
+            "https://connectapi.garmin.com/hrv-service/hrv/2026-03-01"
+        );
+        assert_eq!(
+            GarminEndpoint::BodyBattery.url("2026-03-01"),
+            "https://connectapi.garmin.com/wellness-service/wellness/bodyBattery/reports/daily?startDate=2026-03-01&endDate=2026-03-01"
+        );
+        assert_eq!(
+            GarminEndpoint::DailySummary.url("2026-03-01"),
+            "https://connectapi.garmin.com/usersummary-service/usersummary/daily/?calendarDate=2026-03-01"
+        );
+        assert_eq!(
+            GarminEndpoint::ExerciseSets.url("22005844470"),
+            "https://connectapi.garmin.com/activity-service/activity/22005844470/exerciseSets"
+        );
+    }
+
+    #[test]
+    fn parse_body_names_the_endpoint_in_the_error() {
+        let err = parse_body::<GarminHrvResponse>(GarminEndpoint::Hrv, "nope").unwrap_err();
+        assert!(format!("{err:#}").contains("Failed to parse HRV response"));
+    }
 
     #[test]
     fn deserialize_sleep_response() {

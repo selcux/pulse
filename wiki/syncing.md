@@ -65,6 +65,20 @@ pulse sync --days 7  # backfill the past 7 days
 
 ---
 
+## Stored Responses
+
+Pulse keeps every response body it receives from Garmin and Intervals.icu (see `[storage]` in [Configuration](configuration.md)). Later versions use them to fill new columns for days you have already synced, and `pulse rebuild` refills the data tables from them without network access.
+
+Only days synced from this version on have a stored body. To cover older days, sync them once:
+
+```bash
+pulse sync --days 365
+```
+
+Garmin takes about 4 requests per day, so a year takes roughly 10 to 15 minutes. If Garmin throttles you and some days report errors, run the same command again, or sync in chunks (for example `--days 90`).
+
+---
+
 ## Automation
 
 ### Linux / macOS — cron
