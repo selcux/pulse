@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 4;
+const CURRENT_VERSION: i32 = 5;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -48,6 +48,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v4(db)?;
     }
 
+    if version < 5 {
+        migrate_v5(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -71,6 +75,24 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Turns empty-string `exercise_name` and `exercise_category` values into NULL.
+///
+/// Sets written before `garmin_label` filtered empty labels may hold `''`, which displays as
+/// a blank name instead of falling back to the category. After v4 both columns are nullable,
+/// so no rebuild is needed. Only `''` is converted, as `garmin_label` does not trim either.
+/// The update matches nothing on a database that already has it, so it is safe to run again.
+fn migrate_v5(db: &Database) -> Result<()> {
+    db.conn()
+        .execute_batch(
+            "UPDATE exercise_sets
+             SET exercise_name = NULLIF(exercise_name, ''),
+                 exercise_category = NULLIF(exercise_category, '')
+             WHERE exercise_name = '' OR exercise_category = '';",
+        )
+        .context("Failed to run v5 migration")?;
     Ok(())
 }
 
@@ -306,7 +328,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 4);
+        assert_eq!(CURRENT_VERSION, 5);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -314,7 +336,7 @@ mod tests {
     fn v4_converts_unknown_placeholders_to_null() {
         let db = v3_db();
         run(&db).unwrap();
-        assert_eq!(current_version(&db).unwrap(), 4);
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
         assert_eq!(set_rows(&db), converted());
     }
 
@@ -421,5 +443,64 @@ mod tests {
             )
             .unwrap();
         assert!(not_null);
+    }
+
+    /// A database as pulse 0.3.1 left it: schema version 4, with empty labels from before
+    /// `garmin_label` dropped them.
+    fn v4_db_with_empty_labels() -> Database {
+        let db = v3_db();
+        migrate_v4(&db).unwrap();
+        set_version(&db, 4).unwrap();
+        db.conn()
+            .execute_batch(
+                "DELETE FROM exercise_sets;
+                 INSERT INTO exercise_sets
+                     (id, workout_id, set_order, exercise_category, exercise_name, repetitions, weight_kg)
+                 VALUES
+                     (1, 'w1', 1, 'Chest', 'Bench Press', 10, 60.0),
+                     (2, 'w1', 2, 'Chest', '', 8, NULL),
+                     (3, 'w1', 3, '', 'Squat', 5, 100.0),
+                     (4, 'w1', 4, '', '', 5, 20.0),
+                     (5, 'w1', 5, NULL, NULL, 12, NULL),
+                     (6, 'w1', 6, ' ', ' ', 3, NULL);",
+            )
+            .unwrap();
+        db
+    }
+
+    /// What `v4_db_with_empty_labels` holds after the v5 migration. A label of only
+    /// whitespace is kept: `garmin_label` does not trim either.
+    fn empty_labels_converted() -> Vec<SetRow> {
+        vec![
+            (
+                1,
+                1,
+                text("Chest"),
+                text("Bench Press"),
+                Some(10),
+                Some(60.0),
+            ),
+            (2, 2, text("Chest"), None, Some(8), None),
+            (3, 3, None, text("Squat"), Some(5), Some(100.0)),
+            (4, 4, None, None, Some(5), Some(20.0)),
+            (5, 5, None, None, Some(12), None),
+            (6, 6, text(" "), text(" "), Some(3), None),
+        ]
+    }
+
+    #[test]
+    fn v5_converts_empty_labels_to_null() {
+        let db = v4_db_with_empty_labels();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), 5);
+        assert_eq!(set_rows(&db), empty_labels_converted());
+    }
+
+    #[test]
+    fn v5_can_run_twice() {
+        let db = v4_db_with_empty_labels();
+        migrate_v5(&db).unwrap();
+        migrate_v5(&db).unwrap();
+        assert_eq!(set_rows(&db), empty_labels_converted());
     }
 }
