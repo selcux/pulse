@@ -38,7 +38,7 @@ sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds
 ```
 
 - `workouts` prints a `workouts` table, then `exercise_sets` with one table of sets per workout, keyed by the workout id. The database row id of a set is left out. `exercise_sets: null` means no workout has sets. Its JSON nests the sets inside each workout instead.
-- A set whose exercise Garmin did not identify has `null` for `exercise_name`, for `exercise_category`, or for both, in JSON and in TOON. The key and the column are always present. The terminal table prints `-` in place of the name. Releases up to 0.2.0 printed the text `Unknown` instead.
+- A set whose exercise Garmin did not identify has `null` for `exercise_name`, for `exercise_category`, or for both, in JSON and in TOON. The key and the column are always present. The terminal table prints the name, else the category in parentheses, else `-`. A category in parentheses is the group Garmin filed the exercise under, which can be broader than the exercise itself: Upright Row is filed under `(Shrug)`. Releases up to 0.2.0 stored and printed `Unknown` for a missing value. 0.3.0 printed `-` even when the category was known.
 - `vitality` prints a `pace` block (`pace: null` until seven days are scored) followed by a `scores` table. Numbers are rounded as in the terminal table: two decimals for the pace multiplier, one for everything else. JSON keeps full precision.
 - No data prints as empty tables (`sleep: []`).
 

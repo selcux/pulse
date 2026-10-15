@@ -484,6 +484,16 @@ fn cmd_workouts(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Name column text: the exercise name, else the category in parentheses so it
+/// is not mistaken for the exact exercise, else `-`.
+fn exercise_label(s: &ExerciseSet) -> String {
+    match (&s.exercise_name, &s.exercise_category) {
+        (Some(name), _) => name.clone(),
+        (None, Some(category)) => format!("({category})"),
+        (None, None) => "-".into(),
+    }
+}
+
 fn format_exercise_set(s: &ExerciseSet) -> String {
     let reps = match s.repetitions {
         Some(r) => format!("{}", r),
@@ -496,7 +506,7 @@ fn format_exercise_set(s: &ExerciseSet) -> String {
     format!(
         "  {:>2}. {:<20} {:>3} x {}",
         s.set_order,
-        s.exercise_name.as_deref().unwrap_or("-"),
+        exercise_label(s),
         reps,
         weight
     )
@@ -670,12 +680,12 @@ mod tests {
         }
     }
 
-    fn exercise_set(name: Option<&str>) -> ExerciseSet {
+    fn exercise_set(name: Option<&str>, category: Option<&str>) -> ExerciseSet {
         ExerciseSet {
             id: Some(1),
             workout_id: "i101".into(),
             set_order: 2,
-            exercise_category: Some("Bench Press".into()),
+            exercise_category: category.map(Into::into),
             exercise_name: name.map(Into::into),
             repetitions: Some(8),
             weight_kg: Some(62.5),
@@ -683,17 +693,28 @@ mod tests {
     }
 
     #[test]
-    fn exercise_set_line_shows_the_name() {
+    fn exercise_set_line_shows_the_name_over_the_category() {
         assert_eq!(
-            format_exercise_set(&exercise_set(Some("Barbell Bench Press"))),
+            format_exercise_set(&exercise_set(
+                Some("Barbell Bench Press"),
+                Some("Bench Press")
+            )),
             "   2. Barbell Bench Press    8 x 62.5kg"
         );
     }
 
     #[test]
-    fn exercise_set_line_shows_a_dash_for_a_missing_name() {
+    fn exercise_set_line_falls_back_to_the_category_in_parentheses() {
         assert_eq!(
-            format_exercise_set(&exercise_set(None)),
+            format_exercise_set(&exercise_set(None, Some("Bench Press"))),
+            "   2. (Bench Press)          8 x 62.5kg"
+        );
+    }
+
+    #[test]
+    fn exercise_set_line_shows_a_dash_without_name_or_category() {
+        assert_eq!(
+            format_exercise_set(&exercise_set(None, None)),
             "   2. -                      8 x 62.5kg"
         );
     }
