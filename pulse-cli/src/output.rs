@@ -1,7 +1,7 @@
 //! Machine-readable output for the data commands.
 //!
 //! Each command wraps the rows it queried in a [`Report`] and prints the text a [`Report`]
-//! produces. The hand-formatted terminal tables stay in `main.rs`.
+//! produces. The terminal tables are built in `table.rs`.
 
 use anyhow::Context;
 use pulse_health_core::models::{ExerciseSet, Workout};
@@ -43,6 +43,30 @@ impl OutputArgs {
         } else {
             self.format
         }
+    }
+}
+
+/// Output flags of the commands that print stored rows (`sleep`, `heart`, `recovery`,
+/// `activity`, `stress`, `workouts`): [`OutputArgs`] plus `--wide`.
+#[derive(Debug, Clone, Copy, clap::Args)]
+pub struct StoredOutputArgs {
+    #[command(flatten)]
+    output: OutputArgs,
+
+    /// Show every stored column in the table (table format only)
+    #[arg(long, conflicts_with = "json")]
+    wide: bool,
+}
+
+impl StoredOutputArgs {
+    /// Same as [`OutputArgs::format`].
+    pub fn format(self) -> OutputFormat {
+        self.output.format()
+    }
+
+    /// Whether `--wide` was given.
+    pub fn wide(self) -> bool {
+        self.wide
     }
 }
 

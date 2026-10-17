@@ -9,18 +9,19 @@
 | `pulse sync [provider]` | `--days N` | Sync from all providers, or a specific one (`garmin`, `intervals`) |
 | `pulse rebuild` | — | Refill the data tables from stored provider responses, without network access |
 | `pulse vitality` | `--days N`, `--format FMT`, `--json` | Daily vitality score table |
-| `pulse sleep` | `--days N`, `--format FMT`, `--json` | Sleep stages, score, HRV, bed and wake time |
-| `pulse heart` | `--days N`, `--format FMT`, `--json` | Heart rate data |
-| `pulse recovery` | `--days N`, `--format FMT`, `--json` | HRV and recovery scores |
-| `pulse activity` | `--days N`, `--format FMT`, `--json` | Steps, activity, calories and distance |
-| `pulse stress` | `--days N`, `--format FMT`, `--json` | Stress scores and time at each stress level |
-| `pulse workouts` | `--days N`, `--format FMT`, `--json` | Workout log |
+| `pulse sleep` | `--days N`, `--format FMT`, `--json`, `--wide` | Sleep stages, score, HRV, bed and wake time |
+| `pulse heart` | `--days N`, `--format FMT`, `--json`, `--wide` | Heart rate, HRV and VO2 max |
+| `pulse recovery` | `--days N`, `--format FMT`, `--json`, `--wide` | HRV and recovery scores |
+| `pulse activity` | `--days N`, `--format FMT`, `--json`, `--wide` | Steps, activity, calories and distance |
+| `pulse stress` | `--days N`, `--format FMT`, `--json`, `--wide` | Stress scores and time at each stress level |
+| `pulse workouts` | `--days N`, `--format FMT`, `--json`, `--wide` | Workout log |
 
 ### Common flags
 
 - `--days N` — number of past days to show (default: 7)
 - `--format <table|json|toon|ison>` — how to print the result (default: `table`)
 - `--json` — shorthand for `--format json`; cannot be combined with `--format`
+- `--wide` — `sleep`, `heart`, `recovery`, `activity`, `stress` and `workouts` only: the table shows every stored column, in the order of the JSON fields. For the table format only; it cannot be combined with `--json` or with a `--format` other than `table`. `workouts --wide` prints a table of workouts and a table of their exercise sets instead of the workout log.
 
 ## Output formats
 
@@ -96,4 +97,7 @@ pulse sync garmin --days 2
 
 # Show sleep table for the past week (default)
 pulse sleep
+
+# Every stored sleep column, as a table
+pulse sleep --wide
 ```

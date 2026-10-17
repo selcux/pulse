@@ -1,14 +1,17 @@
 mod output;
+mod table;
 
-use clap::{Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
-use output::{OutputArgs, OutputFormat, Rows, VitalityReport, WorkoutLog};
+use output::{OutputArgs, OutputFormat, Rows, StoredOutputArgs, VitalityReport, WorkoutLog};
 use pulse_health_core::config;
 use pulse_health_core::db::Database;
 use pulse_health_core::db::queries;
 use pulse_health_core::models::{ExerciseSet, Workout};
 use pulse_health_core::sync;
 use pulse_health_core::vitality;
+use table::format_duration;
 
 #[derive(Parser)]
 #[command(
@@ -48,42 +51,42 @@ enum Commands {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
-        output: OutputArgs,
+        output: StoredOutputArgs,
     },
-    /// Show resting heart rate, min/max HR, and HRV
+    /// Show resting heart rate, min/max HR, HRV, and VO2 max
     Heart {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
-        output: OutputArgs,
+        output: StoredOutputArgs,
     },
     /// Show body battery peak/low values
     Recovery {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
-        output: OutputArgs,
+        output: StoredOutputArgs,
     },
     /// Show steps, active minutes, floors, calories, and distance
     Activity {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
-        output: OutputArgs,
+        output: StoredOutputArgs,
     },
     /// Show stress levels and time at each stress level
     Stress {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
-        output: OutputArgs,
+        output: StoredOutputArgs,
     },
     /// Show workouts and exercise sets
     Workouts {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
-        output: OutputArgs,
+        output: StoredOutputArgs,
     },
     /// Show composite vitality score (sleep + recovery + activity + stress)
     Vitality {
@@ -105,59 +108,66 @@ enum ConfigAction {
     Init,
 }
 
+impl Commands {
+    /// Subcommand name and output flags of the six commands that print stored rows; `None` for the others.
+    fn stored_output(&self) -> Option<(&'static str, StoredOutputArgs)> {
+        match self {
+            Commands::Sleep { output, .. } => Some(("sleep", *output)),
+            Commands::Heart { output, .. } => Some(("heart", *output)),
+            Commands::Recovery { output, .. } => Some(("recovery", *output)),
+            Commands::Activity { output, .. } => Some(("activity", *output)),
+            Commands::Stress { output, .. } => Some(("stress", *output)),
+            Commands::Workouts { output, .. } => Some(("workouts", *output)),
+            _ => None,
+        }
+    }
+}
+
+/// Parses the command line, then rejects `--wide` with a `--format` other than `table`, which clap
+/// cannot express (`--json --wide` is rejected by clap itself, through `conflicts_with`).
+fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cli = Cli::try_parse_from(args)?;
+    if let Some((name, output)) = cli.command.stored_output()
+        && output.wide()
+        && output.format() != OutputFormat::Table
+    {
+        let format_name = output
+            .format()
+            .to_possible_value()
+            .map(|v| v.get_name().to_string())
+            .unwrap_or_default();
+        let mut cmd = Cli::command();
+        cmd.build();
+        let sub = cmd
+            .find_subcommand_mut(name)
+            .expect("stored_output names a subcommand");
+        return Err(sub.error(
+            ErrorKind::ArgumentConflict,
+            format!("the argument '--wide' cannot be used with '--format {format_name}'"),
+        ));
+    }
+    Ok(cli)
+}
+
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli(std::env::args_os()).unwrap_or_else(|e| e.exit());
 
     match cli.command {
         Commands::GarminLogin { username, mfa } => cmd_garmin_login(username, mfa),
         Commands::Sync { provider, days } => cmd_sync(provider, days),
         Commands::Rebuild => cmd_rebuild(),
-        Commands::Sleep { days, output } => cmd_sleep(days, output.format()),
-        Commands::Heart { days, output } => cmd_heart(days, output.format()),
-        Commands::Recovery { days, output } => cmd_recovery(days, output.format()),
-        Commands::Activity { days, output } => cmd_activity(days, output.format()),
-        Commands::Stress { days, output } => cmd_stress(days, output.format()),
-        Commands::Workouts { days, output } => cmd_workouts(days, output.format()),
+        Commands::Sleep { days, output } => cmd_sleep(days, output.format(), output.wide()),
+        Commands::Heart { days, output } => cmd_heart(days, output.format(), output.wide()),
+        Commands::Recovery { days, output } => cmd_recovery(days, output.format(), output.wide()),
+        Commands::Activity { days, output } => cmd_activity(days, output.format(), output.wide()),
+        Commands::Stress { days, output } => cmd_stress(days, output.format(), output.wide()),
+        Commands::Workouts { days, output } => cmd_workouts(days, output.format(), output.wide()),
         Commands::Vitality { days, output } => cmd_vitality(days, output.format()),
         Commands::Config { action } => cmd_config(action),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Formatting helpers
-// ---------------------------------------------------------------------------
-
-fn format_duration(seconds: i64) -> String {
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    if hours > 0 {
-        format!("{}h {:02}m", hours, minutes)
-    } else {
-        format!("{}m", minutes)
-    }
-}
-
-/// `HH:MM` of a stored `YYYY-MM-DD HH:MM:SS` time; `-` when absent or too short.
-fn clock_time(val: Option<&str>) -> String {
-    val.and_then(|s| s.get(11..16)).unwrap_or("-").to_string()
-}
-
-/// `format_duration` of a value in seconds; `-` when absent.
-fn opt_duration(val: Option<i64>) -> String {
-    val.map_or_else(|| "-".into(), format_duration)
-}
-
-fn opt_i32(val: Option<i32>) -> String {
-    match val {
-        Some(v) => v.to_string(),
-        None => "-".into(),
-    }
-}
-
-fn opt_f64(val: Option<f64>, decimals: usize) -> String {
-    match val {
-        Some(v) => format!("{v:.decimals$}"),
-        None => "-".into(),
     }
 }
 
@@ -243,7 +253,7 @@ fn cmd_rebuild() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_sleep(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_sleep(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_sleep(&db, days)?;
 
@@ -263,45 +273,12 @@ fn cmd_sleep(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<12}{sep}{:>5}{sep}{:>5}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
-        "Date",
-        "Bed",
-        "Wake",
-        "Total",
-        "Deep",
-        "REM",
-        "Light",
-        "Awake",
-        "Score",
-        "HRV",
-        sep = " \u{2502} "
-    );
-    println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>7}\u{253c}{:\u{2500}>7}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>8}",
-        "", "", "", "", "", "", "", "", "", ""
-    );
-    for s in &data {
-        println!(
-            "{:<12}{sep}{:>5}{sep}{:>5}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
-            s.date,
-            clock_time(s.start_time.as_deref()),
-            clock_time(s.end_time.as_deref()),
-            format_duration(s.total_seconds),
-            format_duration(s.deep_seconds),
-            format_duration(s.rem_seconds),
-            format_duration(s.light_seconds),
-            format_duration(s.awake_seconds),
-            opt_i32(s.sleep_score),
-            opt_f64(s.hrv_ms, 1),
-            sep = " \u{2502} "
-        );
-    }
+    println!("{}", table::SLEEP.render(&data, wide));
 
     Ok(())
 }
 
-fn cmd_heart(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_heart(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_heart(&db, days)?;
 
@@ -321,35 +298,12 @@ fn cmd_heart(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<12}{sep}{:>10}{sep}{:>6}{sep}{:>6}{sep}{:>8}",
-        "Date",
-        "Resting HR",
-        "Max",
-        "Min",
-        "HRV avg",
-        sep = " \u{2502} "
-    );
-    println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>8}\u{253c}{:\u{2500}>8}\u{253c}{:\u{2500}>10}",
-        "", "", "", "", ""
-    );
-    for h in &data {
-        println!(
-            "{:<12}{sep}{:>10}{sep}{:>6}{sep}{:>6}{sep}{:>8}",
-            h.date,
-            opt_i32(h.resting_hr),
-            opt_i32(h.max_hr),
-            opt_i32(h.min_hr),
-            opt_f64(h.hrv_avg, 1),
-            sep = " \u{2502} "
-        );
-    }
+    println!("{}", table::HEART.render(&data, wide));
 
     Ok(())
 }
 
-fn cmd_recovery(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_recovery(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_recovery(&db, days)?;
 
@@ -369,35 +323,12 @@ fn cmd_recovery(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
-        "Date",
-        "Peak",
-        "Low",
-        "Chrgd",
-        "Draind",
-        sep = " \u{2502} "
-    );
-    println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}",
-        "", "", "", "", ""
-    );
-    for r in &data {
-        println!(
-            "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
-            r.date,
-            opt_i32(r.body_battery_peak),
-            opt_i32(r.body_battery_low),
-            opt_i32(r.body_battery_charged),
-            opt_i32(r.body_battery_drained),
-            sep = " \u{2502} "
-        );
-    }
+    println!("{}", table::RECOVERY.render(&data, wide));
 
     Ok(())
 }
 
-fn cmd_activity(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_activity(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_activity(&db, days)?;
 
@@ -417,37 +348,12 @@ fn cmd_activity(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}{sep}{:>10}{sep}{:>7}",
-        "Date",
-        "Steps",
-        "Active min",
-        "Floors",
-        "Total kcal",
-        "Dist km",
-        sep = " \u{2502} "
-    );
-    println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>8}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>9}",
-        "", "", "", "", "", ""
-    );
-    for a in &data {
-        println!(
-            "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}{sep}{:>10}{sep}{:>7}",
-            a.date,
-            opt_i32(a.steps),
-            opt_i32(a.active_minutes),
-            opt_i32(a.floors),
-            opt_f64(a.total_kcal, 0),
-            opt_f64(a.distance_meters.map(|m| m / 1000.0), 2),
-            sep = " \u{2502} "
-        );
-    }
+    println!("{}", table::ACTIVITY.render(&data, wide));
 
     Ok(())
 }
 
-fn cmd_stress(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_stress(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let data = queries::query_stress(&db, days)?;
 
@@ -467,39 +373,12 @@ fn cmd_stress(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<12}{sep}{:>10}{sep}{:>10}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
-        "Date",
-        "Avg Stress",
-        "Max Stress",
-        "Rest",
-        "Low",
-        "Med",
-        "High",
-        sep = " \u{2502} "
-    );
-    println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}",
-        "", "", "", "", "", "", ""
-    );
-    for s in &data {
-        println!(
-            "{:<12}{sep}{:>10}{sep}{:>10}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
-            s.date,
-            opt_i32(s.avg_stress),
-            opt_i32(s.max_stress),
-            opt_duration(s.rest_seconds),
-            opt_duration(s.low_seconds),
-            opt_duration(s.medium_seconds),
-            opt_duration(s.high_seconds),
-            sep = " \u{2502} "
-        );
-    }
+    println!("{}", table::STRESS.render(&data, wide));
 
     Ok(())
 }
 
-fn cmd_workouts(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_workouts(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let workouts = queries::query_workouts(&db, days)?;
     let mut entries: Vec<(Workout, Vec<ExerciseSet>)> = Vec::with_capacity(workouts.len());
@@ -515,6 +394,11 @@ fn cmd_workouts(days: i32, format: OutputFormat) -> anyhow::Result<()> {
 
     if entries.is_empty() {
         println!("No workouts found for the last {} days.", days);
+        return Ok(());
+    }
+
+    if wide {
+        println!("{}", table::workout_log_wide(&entries));
         return Ok(());
     }
 
@@ -563,16 +447,12 @@ fn format_exercise_set(s: &ExerciseSet) -> String {
         Some(r) => format!("{}", r),
         None => "-".into(),
     };
-    let weight = match s.weight_kg {
-        Some(w) => format!("{:.1}kg", w),
-        None => "BW".into(),
-    };
     format!(
         "  {:>2}. {:<20} {:>3} x {}",
         s.set_order,
         exercise_label(s),
         reps,
-        weight
+        table::weight_or_bw(s.weight_kg)
     )
 }
 
@@ -620,38 +500,7 @@ fn cmd_vitality(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         println!();
     }
 
-    println!(
-        "{:<12}{sep}{:>7}{sep}{:>7}{sep}{:>10}{sep}{:>10}{sep}{:>8}{sep}{:>9}",
-        "Date",
-        "Total",
-        "Sleep",
-        "Recovery",
-        "Activity",
-        "Stress",
-        "Fitness",
-        sep = " \u{2502} "
-    );
-    println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>11}",
-        "", "", "", "", "", "", ""
-    );
-    for s in &scores {
-        let fitness = match s.fitness_score {
-            Some(f) => format!("{:>9.1}", f),
-            None => format!("{:>9}", "-"),
-        };
-        println!(
-            "{:<12}{sep}{:>7.1}{sep}{:>7.1}{sep}{:>10.1}{sep}{:>10.1}{sep}{:>8.1}{sep}{}",
-            s.date,
-            s.total_score,
-            s.sleep_score,
-            s.recovery_score,
-            s.activity_score,
-            s.stress_score,
-            fitness,
-            sep = " \u{2502} "
-        );
-    }
+    println!("{}", table::render(table::VITALITY_COLUMNS, &scores));
 
     Ok(())
 }
@@ -722,26 +571,35 @@ fn cmd_config(action: Option<ConfigAction>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
-    use clap::error::ErrorKind;
-    use output::OutputFormat;
 
     const DATA_COMMANDS: [&str; 7] = [
         "sleep", "heart", "recovery", "activity", "stress", "workouts", "vitality",
     ];
 
+    const STORED_COMMANDS: [&str; 6] = [
+        "sleep", "heart", "recovery", "activity", "stress", "workouts",
+    ];
+
     fn parse_format(args: &[&str]) -> Result<OutputFormat, ErrorKind> {
-        let cli = Cli::try_parse_from(args).map_err(|e| e.kind())?;
+        let cli = parse_cli(args).map_err(|e| e.kind())?;
         match cli.command {
-            Commands::Sleep { output, .. }
-            | Commands::Heart { output, .. }
-            | Commands::Recovery { output, .. }
-            | Commands::Activity { output, .. }
-            | Commands::Stress { output, .. }
-            | Commands::Workouts { output, .. }
-            | Commands::Vitality { output, .. } => Ok(output.format()),
-            _ => panic!("not a data command"),
+            Commands::Vitality { output, .. } => Ok(output.format()),
+            other => Ok(other
+                .stored_output()
+                .expect("not a data command")
+                .1
+                .format()),
         }
+    }
+
+    fn parse_wide(args: &[&str]) -> Result<bool, ErrorKind> {
+        let cli = parse_cli(args).map_err(|e| e.kind())?;
+        Ok(cli
+            .command
+            .stored_output()
+            .expect("not a stored row command")
+            .1
+            .wide())
     }
 
     fn exercise_set(name: Option<&str>, category: Option<&str>) -> ExerciseSet {
@@ -781,20 +639,6 @@ mod tests {
             format_exercise_set(&exercise_set(None, None)),
             "   2. -                      8 x 62.5kg"
         );
-    }
-
-    #[test]
-    fn clock_time_shows_hours_and_minutes() {
-        assert_eq!(clock_time(Some("2026-10-15 02:22:10")), "02:22");
-        assert_eq!(clock_time(None), "-");
-        assert_eq!(clock_time(Some("02:22")), "-");
-    }
-
-    #[test]
-    fn opt_duration_formats_or_dashes() {
-        assert_eq!(opt_duration(Some(44340)), "12h 19m");
-        assert_eq!(opt_duration(Some(420)), "7m");
-        assert_eq!(opt_duration(None), "-");
     }
 
     #[test]
@@ -893,6 +737,75 @@ mod tests {
         for args in rejected {
             let kind = Cli::try_parse_from(&args).map_err(|e| e.kind()).err();
             assert_eq!(kind, Some(ErrorKind::UnknownArgument), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn wide_flag_is_off_by_default_and_on_when_given() {
+        for cmd in STORED_COMMANDS {
+            assert_eq!(parse_wide(&["pulse", cmd]), Ok(false), "{cmd}");
+            assert_eq!(parse_wide(&["pulse", cmd, "--wide"]), Ok(true), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn wide_is_allowed_with_format_table() {
+        for cmd in STORED_COMMANDS {
+            let allowed: [&[&str]; 3] = [
+                &["pulse", cmd, "--format", "table", "--wide"],
+                &["pulse", cmd, "--wide", "--format=table"],
+                &["pulse", cmd, "-d", "3", "--wide"],
+            ];
+            for args in allowed {
+                assert_eq!(parse_wide(args), Ok(true), "{args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn wide_with_another_format_is_rejected() {
+        for cmd in STORED_COMMANDS {
+            let conflicts: [&[&str]; 5] = [
+                &["pulse", cmd, "--json", "--wide"],
+                &["pulse", cmd, "--wide", "--json"],
+                &["pulse", cmd, "--format", "json", "--wide"],
+                &["pulse", cmd, "--wide", "--format", "toon"],
+                &["pulse", cmd, "--format=ison", "--wide"],
+            ];
+            for args in conflicts {
+                assert_eq!(
+                    parse_wide(args),
+                    Err(ErrorKind::ArgumentConflict),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wide_conflict_error_names_the_format_and_the_command() {
+        let Err(e) = parse_cli(["pulse", "heart", "--format", "toon", "--wide"]) else {
+            panic!("--wide with --format toon must be rejected");
+        };
+        let message = e.render().to_string();
+        assert!(
+            message.contains("the argument '--wide' cannot be used with '--format toon'"),
+            "{message}"
+        );
+        assert!(message.contains("Usage: pulse heart"), "{message}");
+    }
+
+    #[test]
+    fn wide_flag_exists_only_on_stored_row_commands() {
+        let rejected = [
+            vec!["pulse", "vitality", "--wide"],
+            vec!["pulse", "sync", "--wide"],
+            vec!["pulse", "rebuild", "--wide"],
+            vec!["pulse", "--wide", "sleep"],
+        ];
+        for args in rejected {
+            let kind = parse_cli(&args).map(|_| ()).map_err(|e| e.kind());
+            assert_eq!(kind, Err(ErrorKind::UnknownArgument), "{args:?}");
         }
     }
 
