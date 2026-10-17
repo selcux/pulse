@@ -86,7 +86,7 @@ pub trait Report {
     fn tables(&self) -> anyhow::Result<Value>;
 }
 
-/// Rows of one flat model (`sleep`, `heart`, `recovery`, `activity`, `stress`).
+/// Rows of one flat model (`sleep`, `heart`, `recovery`, `activity`, `stress`, `wellness`).
 pub struct Rows<'a, T> {
     /// Table name in TOON and ISON output; the command name, which is also the SQLite table name.
     pub table: &'static str,

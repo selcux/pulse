@@ -2,7 +2,9 @@
 //! helpers. `--wide` prints every column of a list; the default view prints the columns its
 //! `default_view` names.
 
-use pulse_health_core::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Workout};
+use pulse_health_core::models::{
+    Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Wellness, Workout,
+};
 use pulse_health_core::vitality::VitalityScore;
 
 /// Separator between two cells of a line.
@@ -307,6 +309,21 @@ pub const STRESS: Table<Stress> = Table {
     ],
 };
 
+/// Weight, body fat, fitness (CTL) and fatigue (ATL): the columns in `Wellness`'s field order.
+pub const WELLNESS: Table<Wellness> = Table {
+    columns: &[
+        Column::left("date", "Date", 12, |w| w.date.clone()),
+        Column::right("weight_kg", "Weight kg", 9, |w| opt_f64(w.weight_kg, 1)),
+        Column::right("body_fat_percent", "Body fat %", 10, |w| {
+            opt_f64(w.body_fat_percent, 1)
+        }),
+        Column::right("ctl", "CTL", 6, |w| opt_f64(w.ctl, 1)),
+        Column::right("atl", "ATL", 6, |w| opt_f64(w.atl, 1)),
+        Column::left("source", "Source", 6, |w| w.source.clone()),
+    ],
+    default_view: &["date", "weight_kg", "body_fat_percent", "ctl", "atl"],
+};
+
 /// The vitality table. It has no wide view: every column is always shown.
 pub const VITALITY_COLUMNS: &[Column<VitalityScore>] = &[
     Column::left("date", "Date", 12, |s| s.date.clone()),
@@ -535,6 +552,8 @@ mod tests {
             ACTIVITY.render(&activity_rows(), true),
             STRESS.render(&stress_rows(), false),
             STRESS.render(&stress_rows(), true),
+            WELLNESS.render(&wellness_rows(), false),
+            WELLNESS.render(&wellness_rows(), true),
             render(VITALITY_COLUMNS, &vitality_rows()),
             render(&[name_column(3), n_column(1)], &items()),
             render(&[n_column(1), name_column(3)], &items()),
@@ -752,6 +771,27 @@ mod tests {
                 medium_seconds: None,
                 high_seconds: None,
                 source: "garmin".into(),
+            },
+        ]
+    }
+
+    fn wellness_rows() -> Vec<Wellness> {
+        vec![
+            Wellness {
+                date: "2026-01-02".into(),
+                weight_kg: Some(78.4),
+                body_fat_percent: Some(18.2),
+                ctl: Some(52.34),
+                atl: Some(61.0),
+                source: "intervals".into(),
+            },
+            Wellness {
+                date: "2026-01-01".into(),
+                weight_kg: None,
+                body_fat_percent: None,
+                ctl: Some(51.92),
+                atl: Some(58.71),
+                source: "intervals".into(),
             },
         ]
     }
@@ -983,6 +1023,32 @@ mod tests {
     }
 
     #[test]
+    fn wellness_default_view_shows_weight_body_fat_ctl_and_atl() {
+        assert_eq!(
+            WELLNESS.render(&wellness_rows(), false),
+            lines(&[
+                "Date         │ Weight kg │ Body fat % │    CTL │    ATL",
+                "─────────────┼───────────┼────────────┼────────┼───────",
+                "2026-01-02   │      78.4 │       18.2 │   52.3 │   61.0",
+                "2026-01-01   │         - │          - │   51.9 │   58.7",
+            ])
+        );
+    }
+
+    #[test]
+    fn wellness_wide_view_shows_every_column() {
+        assert_eq!(
+            WELLNESS.render(&wellness_rows(), true),
+            lines(&[
+                "Date         │ Weight kg │ Body fat % │    CTL │    ATL │ Source",
+                "─────────────┼───────────┼────────────┼────────┼────────┼──────────",
+                "2026-01-02   │      78.4 │       18.2 │   52.3 │   61.0 │ intervals",
+                "2026-01-01   │         - │          - │   51.9 │   58.7 │ intervals",
+            ])
+        );
+    }
+
+    #[test]
     fn a_cell_wider_than_its_column_widens_it() {
         let mut rows = activity_rows();
         rows.truncate(1);
@@ -1058,6 +1124,10 @@ mod tests {
         assert_eq!(
             column_fields(STRESS.columns),
             model_fields(&stress_rows()[0])
+        );
+        assert_eq!(
+            column_fields(WELLNESS.columns),
+            model_fields(&wellness_rows()[0])
         );
         assert_eq!(
             column_fields(WORKOUT_COLUMNS),

@@ -14,7 +14,10 @@ use crate::db::{Database, queries};
 pub use crate::date_range::DateRange;
 
 /// Identifies a category of health metric that a provider can supply.
+///
+/// New variants may be added in minor releases; match with a `_` arm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum MetricType {
     /// Nightly sleep summary (stages, score, HRV).
     Sleep,
@@ -28,6 +31,8 @@ pub enum MetricType {
     Stress,
     /// Workout sessions and exercise sets.
     Workout,
+    /// Daily body composition and training load: weight, body fat, fitness (CTL) and fatigue (ATL).
+    Wellness,
 }
 
 /// Summary of a single provider's sync or rebuild run.

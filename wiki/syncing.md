@@ -104,6 +104,18 @@ pulse sync intervals --from 2026-01-01
 
 If Intervals.icu recalculates a workout's load later, for example after you change your thresholds there, sync that day again to pick up the new value.
 
+### Weight, body fat, fitness and fatigue
+
+Since 0.12.0, pulse also syncs Intervals.icu's daily wellness data: weight, body fat, fitness (CTL) and fatigue (ATL). `pulse wellness` shows them. Fitness and fatigue are the values on Intervals.icu's fitness chart, computed from your workouts' training load. Weight and body fat appear only when something records them in Intervals.icu, such as a connected smart scale or a manual entry. When you train on a day without a weigh-in, Intervals.icu copies your last weight to that day; pulse leaves those copies out, so the weight column holds only real weigh-ins.
+
+pulse did not fetch wellness data before 0.12.0, so there is nothing to fill in from stored responses. To load your history, sync it once; Intervals.icu returns any range in a single request:
+
+```bash
+pulse sync intervals --from 2026-01-01
+```
+
+Intervals.icu recalculates fitness and fatigue when you add, edit or delete an activity, or change its load settings. Sync the affected days again to pick up the new values.
+
 ---
 
 ## Syncing Both Providers

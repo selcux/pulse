@@ -10,6 +10,7 @@ pub mod heart;
 pub mod recovery;
 pub mod sleep;
 pub mod stress;
+pub mod wellness;
 pub mod workout;
 
 pub use activity::Activity;
@@ -18,4 +19,5 @@ pub use heart::Heart;
 pub use recovery::Recovery;
 pub use sleep::Sleep;
 pub use stress::Stress;
+pub use wellness::Wellness;
 pub use workout::Workout;

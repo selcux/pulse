@@ -217,12 +217,20 @@ mod tests {
         queries::upsert_raw_response(&db, "garmin", "daily_summary", "2026-03-01", SUMMARY)
             .unwrap();
         queries::upsert_raw_response(&db, "intervals", "activity", "i1", RUN).unwrap();
+        queries::upsert_raw_response(
+            &db,
+            "intervals",
+            "wellness",
+            "2026-03-01",
+            r#"{"id":"2026-03-01","ctl":40.5,"atl":45.0}"#,
+        )
+        .unwrap();
 
         let report = rebuild_all(&db).unwrap();
 
         assert_eq!(report.total_errors, 0);
-        // 1 sleep, 4 daily rows, 1 workout.
-        assert_eq!(report.total_synced, 6);
+        // 1 sleep, 4 daily rows, 1 workout, 1 wellness day.
+        assert_eq!(report.total_synced, 7);
     }
 
     #[test]

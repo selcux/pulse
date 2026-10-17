@@ -10,7 +10,7 @@ use rusqlite::params;
 
 use super::Database;
 use crate::date_range::DateRange;
-use crate::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Workout};
+use crate::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Wellness, Workout};
 
 /// The first and last date of `range` as the `YYYY-MM-DD` text the date columns hold.
 fn date_params(range: &DateRange) -> (String, String) {
@@ -294,6 +294,47 @@ pub fn query_stress(db: &Database, range: &DateRange) -> Result<Vec<Stress>> {
             medium_seconds: row.get(5)?,
             high_seconds: row.get(6)?,
             source: row.get(7)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Wellness
+// ---------------------------------------------------------------------------
+
+/// Insert or replace the wellness record for `w.date`.
+pub fn upsert_wellness(db: &Database, w: &Wellness) -> Result<()> {
+    db.conn().execute(
+        "INSERT OR REPLACE INTO wellness (date, weight_kg, body_fat_percent, ctl, atl, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            w.date,
+            w.weight_kg,
+            w.body_fat_percent,
+            w.ctl,
+            w.atl,
+            w.source,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Return wellness records dated within `range` (both ends included), newest-first.
+pub fn query_wellness(db: &Database, range: &DateRange) -> Result<Vec<Wellness>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT date, weight_kg, body_fat_percent, ctl, atl, source
+         FROM wellness WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC",
+    )?;
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], |row| {
+        Ok(Wellness {
+            date: row.get(0)?,
+            weight_kg: row.get(1)?,
+            body_fat_percent: row.get(2)?,
+            ctl: row.get(3)?,
+            atl: row.get(4)?,
+            source: row.get(5)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -850,6 +891,17 @@ mod tests {
         }
     }
 
+    fn wellness_on(date: &str) -> Wellness {
+        Wellness {
+            date: date.into(),
+            weight_kg: None,
+            body_fat_percent: None,
+            ctl: None,
+            atl: None,
+            source: "intervals".into(),
+        }
+    }
+
     fn workout_at(id: &str, start_time: &str) -> Workout {
         Workout {
             id: id.into(),
@@ -986,6 +1038,7 @@ mod tests {
             upsert_recovery(&db, &recovery_on(d)).unwrap();
             upsert_activity(&db, &activity_on(d)).unwrap();
             upsert_stress(&db, &stress_on(d)).unwrap();
+            upsert_wellness(&db, &wellness_on(d)).unwrap();
         }
         let march_week = range("2026-03-01", "2026-03-07");
         let expected = ["2026-03-07", "2026-03-04", "2026-03-01"];
@@ -1020,6 +1073,12 @@ mod tests {
             .map(|r| r.date)
             .collect();
         assert_eq!(got, expected, "stress");
+        let got: Vec<String> = query_wellness(&db, &march_week)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.date)
+            .collect();
+        assert_eq!(got, expected, "wellness");
     }
 
     #[test]
@@ -1232,5 +1291,48 @@ mod tests {
         assert_eq!(results[0].low_seconds, Some(18000));
         assert_eq!(results[0].medium_seconds, Some(4200));
         assert_eq!(results[0].high_seconds, None);
+    }
+
+    #[test]
+    fn wellness_upsert_and_query_round_trips_every_field() {
+        let db = Database::open_memory().unwrap();
+        let row = Wellness {
+            date: "2026-03-01".into(),
+            weight_kg: Some(78.4),
+            body_fat_percent: Some(18.2),
+            ctl: Some(52.34),
+            atl: Some(0.0),
+            source: "intervals".into(),
+        };
+        upsert_wellness(&db, &row).unwrap();
+        let results = query_wellness(&db, &range("2026-03-01", "2026-03-01")).unwrap();
+        assert_eq!(results, vec![row]);
+        assert_eq!(results[0].atl, Some(0.0), "0 is a value, not NULL");
+    }
+
+    #[test]
+    fn wellness_upsert_replaces_the_whole_day() {
+        let db = Database::open_memory().unwrap();
+        upsert_wellness(
+            &db,
+            &Wellness {
+                weight_kg: Some(78.4),
+                ..wellness_on("2026-03-01")
+            },
+        )
+        .unwrap();
+        upsert_wellness(
+            &db,
+            &Wellness {
+                weight_kg: None,
+                ctl: Some(50.0),
+                ..wellness_on("2026-03-01")
+            },
+        )
+        .unwrap();
+        let results = query_wellness(&db, &range("2026-03-01", "2026-03-01")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].weight_kg, None, "a deleted weigh-in is cleared");
+        assert_eq!(results[0].ctl, Some(50.0));
     }
 }

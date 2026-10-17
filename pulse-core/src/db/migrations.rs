@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 10;
+const CURRENT_VERSION: i32 = 11;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -86,6 +86,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v10(db)?;
     }
 
+    if version < 11 {
+        migrate_v11(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -109,6 +113,25 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Creates `wellness` (issue #4): one row per day of Intervals.icu wellness data. There is no
+/// backfill, because pulse stored no wellness bodies before this version.
+/// `CREATE TABLE IF NOT EXISTS`: safe to run again.
+fn migrate_v11(db: &Database) -> Result<()> {
+    db.conn()
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS wellness (
+                date TEXT NOT NULL PRIMARY KEY,
+                weight_kg REAL,
+                body_fat_percent REAL,
+                ctl REAL,
+                atl REAL,
+                source TEXT NOT NULL DEFAULT 'intervals'
+            );",
+        )
+        .context("Failed to run v11 migration")?;
     Ok(())
 }
 
@@ -580,7 +603,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 10);
+        assert_eq!(CURRENT_VERSION, 11);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -1453,5 +1476,70 @@ mod tests {
         migrate_v10(&db).unwrap();
         migrate_v10(&db).unwrap();
         assert_v10_backfilled(&db);
+    }
+
+    /// A database as pulse 0.11 left it: schema version 10, no wellness table.
+    fn v10_db() -> Database {
+        let db = v9_db_with_load_bodies();
+        migrate_v10(&db).unwrap();
+        set_version(&db, 10).unwrap();
+        db
+    }
+
+    #[test]
+    fn v11_creates_the_wellness_table() {
+        let db = v10_db();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+
+        let mut stmt = db.conn().prepare("PRAGMA table_info(wellness)").unwrap();
+        let columns: Vec<(String, String, bool, i32)> = stmt
+            .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(5)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let expected: Vec<(String, String, bool, i32)> = [
+            ("date", "TEXT", true, 1),
+            ("weight_kg", "REAL", false, 0),
+            ("body_fat_percent", "REAL", false, 0),
+            ("ctl", "REAL", false, 0),
+            ("atl", "REAL", false, 0),
+            ("source", "TEXT", true, 0),
+        ]
+        .into_iter()
+        .map(|(n, t, nn, pk)| (n.to_string(), t.to_string(), nn, pk))
+        .collect();
+        assert_eq!(columns, expected);
+
+        let source_default: String = db
+            .conn()
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('wellness') WHERE name = 'source'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_default, "'intervals'");
+    }
+
+    #[test]
+    fn v11_leaves_the_other_tables_alone() {
+        let db = v10_db();
+        run(&db).unwrap();
+        assert_v10_backfilled(&db);
+    }
+
+    #[test]
+    fn v11_can_run_twice_and_keeps_rows() {
+        let db = v10_db();
+        migrate_v11(&db).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO wellness (date, weight_kg) VALUES ('2026-10-15', 78.4)",
+                [],
+            )
+            .unwrap();
+        migrate_v11(&db).unwrap();
+        assert_eq!(count(&db, "wellness"), 1);
     }
 }

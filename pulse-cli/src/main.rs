@@ -91,6 +91,13 @@ enum Commands {
         #[command(flatten)]
         output: StoredOutputArgs,
     },
+    /// Show weight, body fat, fitness (CTL) and fatigue (ATL) from Intervals.icu
+    Wellness {
+        #[command(flatten)]
+        range: RangeArgs,
+        #[command(flatten)]
+        output: StoredOutputArgs,
+    },
     /// Show composite vitality score (sleep + recovery + activity + stress)
     Vitality {
         #[command(flatten)]
@@ -112,7 +119,7 @@ enum ConfigAction {
 }
 
 impl Commands {
-    /// Subcommand name and output flags of the six commands that print stored rows; `None` for the others.
+    /// Subcommand name and output flags of the seven commands that print stored rows; `None` for the others.
     fn stored_output(&self) -> Option<(&'static str, StoredOutputArgs)> {
         match self {
             Commands::Sleep { output, .. } => Some(("sleep", *output)),
@@ -121,12 +128,13 @@ impl Commands {
             Commands::Activity { output, .. } => Some(("activity", *output)),
             Commands::Stress { output, .. } => Some(("stress", *output)),
             Commands::Workouts { output, .. } => Some(("workouts", *output)),
+            Commands::Wellness { output, .. } => Some(("wellness", *output)),
             _ => None,
         }
     }
 
-    /// Subcommand name and resolved date range of the eight commands with range flags (`sync` and the
-    /// seven data commands); `None` for the others.
+    /// Subcommand name and resolved date range of the nine commands with range flags (`sync` and the
+    /// eight data commands); `None` for the others.
     fn date_range(&self, today: NaiveDate) -> Option<(&'static str, anyhow::Result<DateRange>)> {
         match self {
             Commands::Sync { range, .. } => Some(("sync", range.resolve(today))),
@@ -136,6 +144,7 @@ impl Commands {
             Commands::Activity { range, .. } => Some(("activity", range.resolve(today))),
             Commands::Stress { range, .. } => Some(("stress", range.resolve(today))),
             Commands::Workouts { range, .. } => Some(("workouts", range.resolve(today))),
+            Commands::Wellness { range, .. } => Some(("wellness", range.resolve(today))),
             Commands::Vitality { range, .. } => Some(("vitality", range.resolve(today))),
             _ => None,
         }
@@ -207,6 +216,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Workouts { range, output } => {
             cmd_workouts(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Wellness { range, output } => {
+            cmd_wellness(&range.resolve(today)?, output.format(), output.wide())
         }
         Commands::Vitality { range, output } => {
             cmd_vitality(&range.resolve(today)?, output.format())
@@ -431,6 +443,34 @@ fn cmd_stress(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Re
     Ok(())
 }
 
+fn cmd_wellness(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+    let db = Database::open()?;
+    let data = queries::query_wellness(&db, range)?;
+
+    if let Some(text) = output::render(
+        format,
+        &Rows {
+            table: "wellness",
+            rows: &data,
+        },
+    )? {
+        println!("{text}");
+        return Ok(());
+    }
+
+    if data.is_empty() {
+        println!(
+            "No wellness data found from {} to {}.",
+            range.start, range.end
+        );
+        return Ok(());
+    }
+
+    println!("{}", table::WELLNESS.render(&data, wide));
+
+    Ok(())
+}
+
 fn cmd_workouts(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
     let workouts = queries::query_workouts(&db, range)?;
@@ -647,16 +687,17 @@ fn cmd_config(action: Option<ConfigAction>) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    const DATA_COMMANDS: [&str; 7] = [
-        "sleep", "heart", "recovery", "activity", "stress", "workouts", "vitality",
+    const DATA_COMMANDS: [&str; 8] = [
+        "sleep", "heart", "recovery", "activity", "stress", "workouts", "wellness", "vitality",
     ];
 
-    const STORED_COMMANDS: [&str; 6] = [
-        "sleep", "heart", "recovery", "activity", "stress", "workouts",
+    const STORED_COMMANDS: [&str; 7] = [
+        "sleep", "heart", "recovery", "activity", "stress", "workouts", "wellness",
     ];
 
-    const RANGE_COMMANDS: [&str; 8] = [
-        "sync", "sleep", "heart", "recovery", "activity", "stress", "workouts", "vitality",
+    const RANGE_COMMANDS: [&str; 9] = [
+        "sync", "sleep", "heart", "recovery", "activity", "stress", "workouts", "wellness",
+        "vitality",
     ];
 
     fn today() -> NaiveDate {
