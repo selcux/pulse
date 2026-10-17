@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-health-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1174,7 +1174,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-tui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "pulse-health-core",
 ]
