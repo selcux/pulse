@@ -4,7 +4,7 @@
 //! included) and return rows newest-first: `query_sleep(db, &DateRange::days_ending(today, 7))`
 //! returns today and the 7 days before it.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 
@@ -303,11 +303,28 @@ pub fn query_stress(db: &Database, range: &DateRange) -> Result<Vec<Stress>> {
 // Workouts
 // ---------------------------------------------------------------------------
 
+/// `hr_zone_seconds` as stored: JSON array text such as `[491,158,0]`, the same text the v9
+/// backfill's `json_extract` writes.
+fn zones_to_text(seconds: Option<&[i64]>) -> Result<Option<String>> {
+    seconds
+        .map(|s| serde_json::to_string(s).context("Failed to encode heart rate zone times"))
+        .transpose()
+}
+
+/// Stored `hr_zone_seconds` text back as seconds. Text that is not a JSON array of integers
+/// reads as `None`, so a damaged cell hides the zones, not the workout.
+fn zones_from_text(text: Option<String>) -> Option<Vec<i64>> {
+    serde_json::from_str(&text?).ok()
+}
+
 /// Insert or replace a workout record for `w.id`.
+///
+/// `hr_zone_seconds` is stored as JSON array text, such as `[491,158,0]`.
 pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
+    let zones = zones_to_text(w.hr_zone_seconds.as_deref())?;
     db.conn().execute(
-        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             w.id,
             w.name.as_deref(),
@@ -319,6 +336,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
             w.max_hr,
             w.distance_meters,
             w.avg_speed_mps,
+            zones,
             w.source,
         ],
     )?;
@@ -329,7 +347,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
 /// newest-first.
 pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, source
+        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, source
          FROM workouts WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2 ORDER BY start_time DESC",
     )?;
     let (start, end) = date_params(range);
@@ -345,7 +363,8 @@ pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> 
             max_hr: row.get(7)?,
             distance_meters: row.get(8)?,
             avg_speed_mps: row.get(9)?,
-            source: row.get(10)?,
+            hr_zone_seconds: zones_from_text(row.get(10)?),
+            source: row.get(11)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -649,6 +668,7 @@ mod tests {
             max_hr: Some(165),
             distance_meters: None,
             avg_speed_mps: None,
+            hr_zone_seconds: None,
             source: "intervals".into(),
         };
         upsert_workout(&db, &workout).unwrap();
@@ -704,6 +724,7 @@ mod tests {
             max_hr: Some(165),
             distance_meters: None,
             avg_speed_mps: None,
+            hr_zone_seconds: None,
             source: "intervals".into(),
         };
         upsert_workout(&db, &workout).unwrap();
@@ -837,8 +858,70 @@ mod tests {
             max_hr: None,
             distance_meters: None,
             avg_speed_mps: None,
+            hr_zone_seconds: None,
             source: "intervals".into(),
         }
+    }
+
+    #[test]
+    fn workout_round_trips_hr_zone_seconds() {
+        let db = test_db();
+        let walk = Workout {
+            hr_zone_seconds: Some(vec![491, 158, 150, 110, 28, 0, 0]),
+            ..workout_at("w-walk", "2026-10-15T07:00:00")
+        };
+        let run = Workout {
+            hr_zone_seconds: Some(vec![0, 0, 600, 1200, 30]),
+            ..workout_at("w-run", "2026-10-14T07:00:00")
+        };
+        upsert_workout(&db, &walk).unwrap();
+        upsert_workout(&db, &run).unwrap();
+        upsert_workout(&db, &workout_at("w-lift", "2026-10-13T18:00:00")).unwrap();
+
+        let got = query_workouts(&db, &range("2026-10-13", "2026-10-15")).unwrap();
+
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].id, "w-walk");
+        assert_eq!(
+            got[0].hr_zone_seconds,
+            Some(vec![491, 158, 150, 110, 28, 0, 0])
+        );
+        assert_eq!(got[1].id, "w-run");
+        assert_eq!(got[1].hr_zone_seconds, Some(vec![0, 0, 600, 1200, 30]));
+        assert_eq!(got[2].id, "w-lift");
+        assert_eq!(got[2].hr_zone_seconds, None);
+
+        // The stored text is what the v9 migration's backfill also writes.
+        let stored: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT hr_zone_seconds FROM workouts WHERE id = 'w-walk'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("[491,158,150,110,28,0,0]"));
+    }
+
+    #[test]
+    fn query_workouts_reads_an_undecodable_zone_value_as_none() {
+        let db = test_db();
+        let walk = Workout {
+            hr_zone_seconds: Some(vec![491, 158, 0]),
+            ..workout_at("w-walk", "2026-10-15T07:00:00")
+        };
+        upsert_workout(&db, &walk).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE workouts SET hr_zone_seconds = 'not json' WHERE id = 'w-walk'",
+                [],
+            )
+            .unwrap();
+
+        let got = query_workouts(&db, &range("2026-10-15", "2026-10-15")).unwrap();
+
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].hr_zone_seconds, None);
     }
 
     #[test]

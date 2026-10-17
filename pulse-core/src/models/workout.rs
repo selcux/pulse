@@ -27,6 +27,12 @@ pub struct Workout {
     /// Average speed over the workout as the recording device reported it, in meters per second.
     /// `None` when not recorded. Pace per kilometer is `1000 / avg_speed_mps` seconds.
     pub avg_speed_mps: Option<f64>,
+    /// Seconds spent in each heart rate zone, lowest zone first (`[0]` is Z1), as Intervals.icu
+    /// counted them against the zones configured there for this workout. The length is the
+    /// athlete's zone count. The times add up to the time with a heart rate reading, which can
+    /// differ from `duration_seconds` by a minute or two. `None` when the provider recorded no zone
+    /// time: no heart rate, or every zone at 0.
+    pub hr_zone_seconds: Option<Vec<i64>>,
     /// Provider that supplied this record (e.g. `"intervals"`, `"garmin"`).
     pub source: String,
 }

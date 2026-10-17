@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 8;
+const CURRENT_VERSION: i32 = 9;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -78,6 +78,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v8(db)?;
     }
 
+    if version < 9 {
+        migrate_v9(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -101,6 +105,44 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Columns added by v9, as `(table, column, SQL type)`.
+const V9_COLUMNS: [(&str, &str, &str); 1] = [("workouts", "hr_zone_seconds", "TEXT")];
+
+/// Fills `workouts.hr_zone_seconds` from stored Intervals.icu activity bodies. Must store exactly
+/// what `IntervalsProvider::map_workout` stores for the same body: the `icu_hr_zone_times` array
+/// as minified JSON text when every element is a JSON integer within i64 and not negative and at
+/// least one is above zero, otherwise NULL. A JSON integer beyond i64 comes out of `json_each` as
+/// REAL, hence the `typeof` test. `migration_v9_backfill_matches_the_rust_mapping` pins that.
+/// Only rows with a stored body are written; no row is inserted.
+const V9_BACKFILL: &str = "
+    UPDATE workouts SET
+        hr_zone_seconds = CASE
+            WHEN json_type(r.body, '$.icu_hr_zone_times') = 'array'
+             AND NOT EXISTS (SELECT 1 FROM json_each(r.body, '$.icu_hr_zone_times') AS z
+                             WHERE z.type <> 'integer' OR typeof(z.value) <> 'integer' OR z.value < 0)
+             AND EXISTS (SELECT 1 FROM json_each(r.body, '$.icu_hr_zone_times') AS z
+                         WHERE z.value > 0)
+            THEN json_extract(r.body, '$.icu_hr_zone_times') END
+    FROM raw_responses AS r
+    WHERE r.provider = 'intervals' AND r.endpoint = 'activity' AND r.key = workouts.id;
+";
+
+/// Adds `workouts.hr_zone_seconds` (issue #6) and fills it for every workout whose Intervals.icu
+/// body is stored in `raw_responses`. Workouts without one (synced before 0.5.0, or with raw
+/// storage off) stay NULL until synced again.
+///
+/// One transaction, safe to run again for the same reason as `migrate_v7`.
+pub(crate) fn migrate_v9(db: &Database) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    for (table, column, decl) in V9_COLUMNS {
+        add_column_if_missing(&tx, table, column, decl)?;
+    }
+    tx.execute_batch(V9_BACKFILL)
+        .context("Failed to run v9 migration")?;
+    tx.commit().context("Failed to commit v9 migration")?;
     Ok(())
 }
 
@@ -500,7 +542,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 8);
+        assert_eq!(CURRENT_VERSION, 9);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -1011,8 +1053,7 @@ mod tests {
     #[test]
     fn v8_adds_the_workout_columns() {
         let db = v7_db_with_workouts();
-        run(&db).unwrap();
-        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        migrate_v8(&db).unwrap();
 
         assert_eq!(
             columns_of(&db, "workouts"),
@@ -1101,5 +1142,137 @@ mod tests {
         migrate_v8(&db).unwrap();
         migrate_v8(&db).unwrap();
         assert_v8_backfilled(&db);
+    }
+
+    /// A database as pulse 0.9 left it: schema version 8, workouts without `hr_zone_seconds`, and
+    /// stored Intervals.icu activity bodies with zone times for some of them.
+    fn v8_db_with_zone_bodies() -> Database {
+        let db = v7_db_with_workouts();
+        migrate_v8(&db).unwrap();
+        set_version(&db, 8).unwrap();
+        db.conn()
+            .execute_batch(
+                r#"INSERT INTO workouts (id, start_time, duration_seconds, activity_type) VALUES
+                 ('i211', '2026-10-16T07:00:00', 3540, 'Walk'),
+                 ('i212', '2026-10-16T18:00:00', 3600, 'WeightTraining'),
+                 ('i213', '2026-10-17T07:00:00', 1800, 'Run'),
+                 ('i214', '2026-10-17T09:00:00', 1200, 'Walk'),
+                 ('i215', '2026-10-17T10:00:00', 600, 'Walk');
+                 INSERT INTO raw_responses (provider, endpoint, key, body) VALUES
+                 ('intervals', 'activity', 'i211', '{"id":"i211","type":"Walk","icu_hr_zone_times":[491,158,150,110,28,0,0],"icu_hr_zones":[129,137,145,153,157,162,170]}'),
+                 ('intervals', 'activity', 'i212', '{"id":"i212","type":"WeightTraining","icu_hr_zone_times":[0,0,0,0,0,0,0]}'),
+                 ('intervals', 'activity', 'i213', '{"id":"i213","type":"Run","icu_hr_zone_times": [0, 0, 600, 1200, 30]}'),
+                 ('intervals', 'activity', 'i214', '{"id":"i214","type":"Walk","icu_hr_zone_times":[491,null,0]}'),
+                 ('intervals', 'activity', 'i216', '{"id":"i216","type":"Walk","icu_hr_zone_times":[1,2,3]}'),
+                 ('garmin', 'activity', 'i215', '{"icu_hr_zone_times":[1,2,3]}');"#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// The stored `hr_zone_seconds` text of one workout.
+    fn zone_text(db: &Database, id: &str) -> Option<String> {
+        db.conn()
+            .query_row(
+                "SELECT hr_zone_seconds FROM workouts WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn v9_adds_the_zone_column() {
+        let db = v8_db_with_zone_bodies();
+        migrate_v9(&db).unwrap();
+
+        assert_eq!(
+            columns_of(&db, "workouts"),
+            pairs(&[
+                ("id", "TEXT"),
+                ("start_time", "TEXT"),
+                ("duration_seconds", "INTEGER"),
+                ("activity_type", "TEXT"),
+                ("calories", "INTEGER"),
+                ("avg_hr", "INTEGER"),
+                ("max_hr", "INTEGER"),
+                ("source", "TEXT"),
+                ("name", "TEXT"),
+                ("distance_meters", "REAL"),
+                ("avg_speed_mps", "REAL"),
+                ("hr_zone_seconds", "TEXT"),
+            ])
+        );
+    }
+
+    /// Asserts the values the fixture's bodies produce, and that the other rows stayed empty.
+    fn assert_v9_backfilled(db: &Database) {
+        assert_eq!(
+            zone_text(db, "i211").as_deref(),
+            Some("[491,158,150,110,28,0,0]"),
+            "a stored array is copied"
+        );
+        assert_eq!(zone_text(db, "i212"), None, "all zeros become NULL");
+        assert_eq!(
+            zone_text(db, "i213").as_deref(),
+            Some("[0,0,600,1200,30]"),
+            "five zones; whitespace dropped"
+        );
+        assert_eq!(
+            zone_text(db, "i214"),
+            None,
+            "a null element voids the array"
+        );
+        assert_eq!(
+            zone_text(db, "i215"),
+            None,
+            "the decoy under another provider was not used"
+        );
+        assert_eq!(
+            zone_text(db, "i201"),
+            None,
+            "a body without the field gives NULL"
+        );
+        assert_eq!(zone_text(db, "w1"), None);
+
+        // No row was inserted for the body that has no workout.
+        assert_eq!(count(db, "workouts"), 11);
+
+        // The old columns are untouched.
+        assert_eq!(
+            workout_extras(db, "i201"),
+            (Some(5043.21), Some(1.417)),
+            "the v8 columns keep their values"
+        );
+        assert_eq!(set_rows(db), empty_labels_converted());
+    }
+
+    #[test]
+    fn v9_fills_workouts_that_have_a_stored_body() {
+        let db = v8_db_with_zone_bodies();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        assert_v9_backfilled(&db);
+    }
+
+    #[test]
+    fn v9_runs_with_no_stored_bodies() {
+        let db = v8_db_with_zone_bodies();
+        db.conn().execute("DELETE FROM raw_responses", []).unwrap();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        for id in [
+            "w1", "i201", "i202", "i203", "i205", "i206", "i211", "i212", "i213", "i214", "i215",
+        ] {
+            assert_eq!(zone_text(&db, id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn v9_can_run_twice() {
+        let db = v8_db_with_zone_bodies();
+        migrate_v9(&db).unwrap();
+        migrate_v9(&db).unwrap();
+        assert_v9_backfilled(&db);
     }
 }

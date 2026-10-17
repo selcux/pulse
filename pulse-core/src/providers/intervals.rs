@@ -40,6 +40,10 @@ struct ApiActivity {
     /// Average speed in meters per second, as the device recorded it. Not the body's `pace`
     /// field, which despite its name is also m/s (distance / moving_time).
     average_speed: Option<f64>,
+    /// Seconds in each heart rate zone, lowest first, against the zones configured in
+    /// Intervals.icu. Kept as raw JSON so an unexpected shape costs only the zone times, not the
+    /// whole activity; `hr_zone_seconds` decides what counts.
+    icu_hr_zone_times: Option<serde_json::Value>,
     /// Garmin Connect activity ID — used to fetch exercise sets.
     external_id: Option<String>,
 }
@@ -155,6 +159,19 @@ fn split_activities(list_body: &str) -> Result<Vec<ActivityBody>> {
 /// Parse one activity body, fresh or stored.
 fn parse_activity(body: &str) -> Result<ApiActivity> {
     serde_json::from_str(body).context("Failed to parse Intervals.icu activity")
+}
+
+/// Zone times from the body's `icu_hr_zone_times`: `Some` only for an array of JSON integers
+/// that are all >= 0 with at least one above 0; missing, null, empty, all-zero or any other
+/// shape is `None` (no zone time recorded). The v9 migration repeats this rule in SQL;
+/// `migration_v9_backfill_matches_the_rust_mapping` pins the two together.
+fn hr_zone_seconds(times: Option<&serde_json::Value>) -> Option<Vec<i64>> {
+    let seconds = times?
+        .as_array()?
+        .iter()
+        .map(|zone| zone.as_i64().filter(|s| *s >= 0))
+        .collect::<Option<Vec<i64>>>()?;
+    seconds.iter().any(|s| *s > 0).then_some(seconds)
 }
 
 /// Map a Garmin exercise-sets body, fresh or stored, to our sets for `workout_id`.
@@ -281,6 +298,7 @@ impl IntervalsProvider {
             max_hr: api.max_heartrate.map(|h| h as i32),
             distance_meters: api.distance.filter(|d| *d > 0.0),
             avg_speed_mps: api.average_speed.filter(|s| *s > 0.0),
+            hr_zone_seconds: hr_zone_seconds(api.icu_hr_zone_times.as_ref()),
             source: "intervals".into(),
         }
     }
@@ -468,6 +486,7 @@ mod tests {
             max_heartrate: Some(155.0),
             distance: None,
             average_speed: None,
+            icu_hr_zone_times: None,
             external_id: Some("22005844470".into()),
         };
         let w = IntervalsProvider::map_workout(&api);
@@ -478,6 +497,7 @@ mod tests {
         assert_eq!(w.avg_hr, Some(120));
         assert_eq!(w.distance_meters, None);
         assert_eq!(w.avg_speed_mps, None);
+        assert_eq!(w.hr_zone_seconds, None);
         assert_eq!(w.source, "intervals");
     }
 
@@ -495,6 +515,7 @@ mod tests {
             max_heartrate: None,
             distance,
             average_speed,
+            icu_hr_zone_times: None,
             external_id: None,
         }
     }
@@ -690,8 +711,8 @@ mod tests {
     }
 
     const ACTIVITIES_BODY: &str = r#"[
-  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"external_id":"22005844470","icu_ftp":1.50},
-  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "average_speed": 2.9, "distance": 5012.5}
+  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"external_id":"22005844470","icu_hr_zone_times":[1500,1200,600,300,0],"icu_ftp":1.50},
+  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "icu_hr_zone_times": [0, 0, 0], "average_speed": 2.9, "distance": 5012.5}
 ]"#;
     const SETS_BODY: &str = r#"{"exerciseSets":[{"exercises":[{"category":"BENCH_PRESS","name":"BARBELL_BENCH_PRESS"}],"repetitionCount":10,"weight":60000.0,"setType":"ACTIVE"},{"exercises":[],"setType":"REST"}]}"#;
 
@@ -806,7 +827,128 @@ mod tests {
         };
         assert_eq!(extras("i102"), (Some(5012.5), Some(2.9)));
         assert_eq!(extras("i101"), (None, None));
+        let zones = |id: &str| -> Option<String> {
+            db.conn()
+                .query_row(
+                    "SELECT hr_zone_seconds FROM workouts WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(zones("i101").as_deref(), Some("[1500,1200,600,300,0]"));
+        assert_eq!(zones("i102"), None, "all zeros are no zone time");
         assert_eq!(queries::query_exercise_sets(&db, "i101").unwrap().len(), 1);
+    }
+
+    /// The v9 migration repeats `hr_zone_seconds`'s rule in SQL. Both must store the same text
+    /// for the same stored body, malformed ones included.
+    #[test]
+    fn migration_v9_backfill_matches_the_rust_mapping() {
+        let bodies = [
+            r#"{"id":"i401","start_date_local":"2026-10-15T07:00:00","type":"Walk","moving_time":3540,"icu_hr_zone_times":[491,158,150,110,28,0,0]}"#,
+            r#"{"id":"i402","start_date_local":"2026-10-14T18:00:00","type":"WeightTraining","icu_hr_zone_times":[0,0,0,0,0,0,0]}"#,
+            r#"{"id":"i403","start_date_local":"2026-10-13T07:00:00","type":"Run","icu_hr_zone_times": [0, 0, 600, 1200, 30]}"#,
+            r#"{"id":"i404","start_date_local":"2026-10-12T07:00:00","type":"Walk"}"#,
+            r#"{"id":"i405","start_date_local":"2026-10-11T07:00:00","type":"Walk","icu_hr_zone_times":null}"#,
+            r#"{"id":"i406","start_date_local":"2026-10-10T07:00:00","type":"Walk","icu_hr_zone_times":[]}"#,
+            r#"{"id":"i407","start_date_local":"2026-10-09T07:00:00","type":"Walk","icu_hr_zone_times":[491.0,158,0]}"#,
+            r#"{"id":"i408","start_date_local":"2026-10-08T07:00:00","type":"Walk","icu_hr_zone_times":[491,null,0]}"#,
+            r#"{"id":"i409","start_date_local":"2026-10-07T07:00:00","type":"Walk","icu_hr_zone_times":[491,-1,0]}"#,
+            r#"{"id":"i410","start_date_local":"2026-10-06T07:00:00","type":"Walk","icu_hr_zone_times":"491,158"}"#,
+            r#"{"id":"i411","start_date_local":"2026-10-05T07:00:00","type":"Walk","icu_hr_zone_times":[9223372036854775808,1]}"#,
+            r#"{"id":"i412","start_date_local":"2026-10-04T07:00:00","type":"Walk","icu_hr_zone_times":[true,158]}"#,
+        ];
+        let db = Database::open_memory().unwrap();
+        let mut mapped = Vec::new();
+        for body in bodies {
+            let w = IntervalsProvider::map_workout(&parse_activity(body).unwrap());
+            queries::upsert_raw_response(&db, PROVIDER, ACTIVITY_ENDPOINT, &w.id, body).unwrap();
+            // A stale value the migration must overwrite either way.
+            let before = Workout {
+                hr_zone_seconds: Some(vec![9, 9, 9]),
+                ..w.clone()
+            };
+            queries::upsert_workout(&db, &before).unwrap();
+            mapped.push(w);
+        }
+
+        crate::db::migrations::migrate_v9(&db).unwrap();
+
+        for w in &mapped {
+            let stored: Option<String> = db
+                .conn()
+                .query_row(
+                    "SELECT hr_zone_seconds FROM workouts WHERE id = ?1",
+                    [&w.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let expected = w
+                .hr_zone_seconds
+                .as_ref()
+                .map(|z| serde_json::to_string(z).unwrap());
+            assert_eq!(stored, expected, "{}", w.id);
+        }
+        // Not vacuous: only the two well-formed bodies with time map to a value.
+        for w in &mapped {
+            let expected = match w.id.as_str() {
+                "i401" => Some(vec![491, 158, 150, 110, 28, 0, 0]),
+                "i403" => Some(vec![0, 0, 600, 1200, 30]),
+                _ => None,
+            };
+            assert_eq!(w.hr_zone_seconds, expected, "{}", w.id);
+        }
+    }
+
+    #[test]
+    fn hr_zone_seconds_keeps_only_arrays_of_non_negative_integers_with_time() {
+        use serde_json::json;
+        assert_eq!(
+            hr_zone_seconds(Some(&json!([491, 158, 150, 110, 28, 0, 0]))),
+            Some(vec![491, 158, 150, 110, 28, 0, 0])
+        );
+        assert_eq!(
+            hr_zone_seconds(Some(&json!([0, 0, 600, 1200, 30]))),
+            Some(vec![0, 0, 600, 1200, 30])
+        );
+        for value in [
+            json!(null),
+            json!([]),
+            json!([0, 0, 0, 0, 0, 0, 0]),
+            json!([491.0, 158, 0]),
+            json!([491, null, 0]),
+            json!([491, -1, 0]),
+            json!("491,158"),
+            json!(["491", 158]),
+            json!({"z1": 491}),
+            json!([true, 158]),
+            json!([[491], 158]),
+        ] {
+            assert_eq!(hr_zone_seconds(Some(&value)), None, "{value}");
+        }
+        assert_eq!(hr_zone_seconds(None), None);
+    }
+
+    #[test]
+    fn parse_activity_keeps_the_activity_when_zone_times_are_malformed() {
+        for times in [r#""oops""#, r#"{"z1":491}"#] {
+            let body = format!(
+                r#"{{"id":"i1","start_date_local":"2026-10-15T07:00:00","icu_hr_zone_times":{times}}}"#
+            );
+            let api = parse_activity(&body).unwrap();
+            assert_eq!(
+                IntervalsProvider::map_workout(&api).hr_zone_seconds,
+                None,
+                "{times}"
+            );
+        }
+        for body in [
+            r#"{"id":"i1","start_date_local":"2026-10-15T07:00:00"}"#,
+            r#"{"id":"i1","start_date_local":"2026-10-15T07:00:00","icu_hr_zone_times":null}"#,
+        ] {
+            assert_eq!(parse_activity(body).unwrap().icu_hr_zone_times, None);
+        }
     }
 
     /// The v8 migration repeats `map_workout`'s distance and speed rules in SQL. Both must give

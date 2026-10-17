@@ -84,7 +84,7 @@ enum Commands {
         #[command(flatten)]
         output: StoredOutputArgs,
     },
-    /// Show workouts with distance, pace and exercise sets
+    /// Show workouts with distance, pace, heart rate zones and exercise sets
     Workouts {
         #[command(flatten)]
         range: RangeArgs,
@@ -457,6 +457,9 @@ fn cmd_workouts(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::
 
     for (w, sets) in &entries {
         println!("{}", format_workout_line(w));
+        if let Some(line) = format_zone_line(w) {
+            println!("{line}");
+        }
 
         for s in sets {
             println!("{}", format_exercise_set(s));
@@ -492,6 +495,13 @@ fn format_workout_line(w: &Workout) -> String {
         None => w.activity_type.clone(),
     };
     format!("[{}] {} ({})", w.start_time, label, parts.join(", "))
+}
+
+/// The log line under a workout with heart rate zone times: `  HR zones: Z1 8m · Z2 2m`.
+/// `None` when no zone has time, so no line is printed.
+fn format_zone_line(w: &Workout) -> Option<String> {
+    let zones = table::format_hr_zones(w.hr_zone_seconds.as_deref()?)?;
+    Some(format!("  HR zones: {zones}"))
 }
 
 /// Name column text: the exercise name, else the category in parentheses so it
@@ -743,7 +753,34 @@ mod tests {
             max_hr: None,
             distance_meters: distance,
             avg_speed_mps: speed,
+            hr_zone_seconds: None,
             source: "intervals".into(),
+        }
+    }
+
+    #[test]
+    fn zone_line_lists_the_zones_with_time() {
+        let w = Workout {
+            hr_zone_seconds: Some(vec![491, 158, 150, 110, 28, 0, 0]),
+            ..workout(None, None)
+        };
+        assert_eq!(
+            format_zone_line(&w),
+            Some(
+                "  HR zones: Z1 8m \u{b7} Z2 2m \u{b7} Z3 2m \u{b7} Z4 1m \u{b7} Z5 <1m"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn zone_line_is_none_without_zone_time() {
+        for zones in [None, Some(vec![]), Some(vec![0, 0, 0])] {
+            let w = Workout {
+                hr_zone_seconds: zones.clone(),
+                ..workout(None, None)
+            };
+            assert_eq!(format_zone_line(&w), None, "{zones:?}");
         }
     }
 

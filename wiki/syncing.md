@@ -84,6 +84,16 @@ pulse sync intervals --from 2026-01-01
 
 Pace comes from the average speed your watch recorded, so it can differ slightly from duration divided by distance: the duration is Intervals.icu's moving time.
 
+### Heart rate zones
+
+Since 0.10.0, pulse stores how long each workout spent in each heart rate zone, and `pulse workouts` shows it under the workout line (`HR zones: Z1 8m · Z2 2m · …`, Z1 being the lowest). The zones are the ones configured in Intervals.icu, and each workout's times are counted against the zones Intervals.icu used for it, so after you change your zones, older workouts keep their times for the old zones. When 0.10.0 first opens your database, it fills the zone times for every workout synced since 0.5.0, from the stored Intervals.icu responses. Older workouts stay empty until you sync them once:
+
+```bash
+pulse sync intervals --from 2026-01-01
+```
+
+The zone times add up to the time with a heart rate reading, so their sum can differ from the workout's duration by a minute or two. A workout recorded without heart rate shows no zones.
+
 ---
 
 ## Syncing Both Providers
