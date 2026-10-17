@@ -43,7 +43,7 @@ enum Commands {
     },
     /// Refill the data tables from stored provider responses (no network)
     Rebuild,
-    /// Show sleep duration, stages, and scores
+    /// Show sleep duration, stages, scores, and bed and wake times
     Sleep {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
@@ -64,14 +64,14 @@ enum Commands {
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Show steps, active minutes, and floors
+    /// Show steps, active minutes, floors, calories, and distance
     Activity {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Show average and max stress levels
+    /// Show stress levels and time at each stress level
     Stress {
         #[arg(short, long, default_value_t = 7)]
         days: i32,
@@ -135,6 +135,16 @@ fn format_duration(seconds: i64) -> String {
     } else {
         format!("{}m", minutes)
     }
+}
+
+/// `HH:MM` of a stored `YYYY-MM-DD HH:MM:SS` time; `-` when absent or too short.
+fn clock_time(val: Option<&str>) -> String {
+    val.and_then(|s| s.get(11..16)).unwrap_or("-").to_string()
+}
+
+/// `format_duration` of a value in seconds; `-` when absent.
+fn opt_duration(val: Option<i64>) -> String {
+    val.map_or_else(|| "-".into(), format_duration)
 }
 
 fn opt_i32(val: Option<i32>) -> String {
@@ -254,8 +264,10 @@ fn cmd_sleep(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<12}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
+        "{:<12}{sep}{:>5}{sep}{:>5}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
         "Date",
+        "Bed",
+        "Wake",
         "Total",
         "Deep",
         "REM",
@@ -266,13 +278,15 @@ fn cmd_sleep(days: i32, format: OutputFormat) -> anyhow::Result<()> {
         sep = " \u{2502} "
     );
     println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>8}",
-        "", "", "", "", "", "", "", ""
+        "{:\u{2500}<12}\u{253c}{:\u{2500}>7}\u{253c}{:\u{2500}>7}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>10}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>8}",
+        "", "", "", "", "", "", "", "", "", ""
     );
     for s in &data {
         println!(
-            "{:<12}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
+            "{:<12}{sep}{:>5}{sep}{:>5}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>8}{sep}{:>7}{sep}{:>7}{sep}{:>6}",
             s.date,
+            clock_time(s.start_time.as_deref()),
+            clock_time(s.end_time.as_deref()),
             format_duration(s.total_seconds),
             format_duration(s.deep_seconds),
             format_duration(s.rem_seconds),
@@ -404,24 +418,28 @@ fn cmd_activity(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}",
+        "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}{sep}{:>10}{sep}{:>7}",
         "Date",
         "Steps",
         "Active min",
         "Floors",
+        "Total kcal",
+        "Dist km",
         sep = " \u{2502} "
     );
     println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>8}",
-        "", "", "", ""
+        "{:\u{2500}<12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>8}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>9}",
+        "", "", "", "", "", ""
     );
     for a in &data {
         println!(
-            "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}",
+            "{:<12}{sep}{:>7}{sep}{:>10}{sep}{:>6}{sep}{:>10}{sep}{:>7}",
             a.date,
             opt_i32(a.steps),
             opt_i32(a.active_minutes),
             opt_i32(a.floors),
+            opt_f64(a.total_kcal, 0),
+            opt_f64(a.distance_meters.map(|m| m / 1000.0), 2),
             sep = " \u{2502} "
         );
     }
@@ -450,22 +468,30 @@ fn cmd_stress(days: i32, format: OutputFormat) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<12}{sep}{:>10}{sep}{:>10}",
+        "{:<12}{sep}{:>10}{sep}{:>10}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
         "Date",
         "Avg Stress",
         "Max Stress",
+        "Rest",
+        "Low",
+        "Med",
+        "High",
         sep = " \u{2502} "
     );
     println!(
-        "{:\u{2500}<12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>12}",
-        "", "", ""
+        "{:\u{2500}<12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>12}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}\u{253c}{:\u{2500}>9}",
+        "", "", "", "", "", "", ""
     );
     for s in &data {
         println!(
-            "{:<12}{sep}{:>10}{sep}{:>10}",
+            "{:<12}{sep}{:>10}{sep}{:>10}{sep}{:>7}{sep}{:>7}{sep}{:>7}{sep}{:>7}",
             s.date,
             opt_i32(s.avg_stress),
             opt_i32(s.max_stress),
+            opt_duration(s.rest_seconds),
+            opt_duration(s.low_seconds),
+            opt_duration(s.medium_seconds),
+            opt_duration(s.high_seconds),
             sep = " \u{2502} "
         );
     }
@@ -755,6 +781,20 @@ mod tests {
             format_exercise_set(&exercise_set(None, None)),
             "   2. -                      8 x 62.5kg"
         );
+    }
+
+    #[test]
+    fn clock_time_shows_hours_and_minutes() {
+        assert_eq!(clock_time(Some("2026-10-15 02:22:10")), "02:22");
+        assert_eq!(clock_time(None), "-");
+        assert_eq!(clock_time(Some("02:22")), "-");
+    }
+
+    #[test]
+    fn opt_duration_formats_or_dashes() {
+        assert_eq!(opt_duration(Some(44340)), "12h 19m");
+        assert_eq!(opt_duration(Some(420)), "7m");
+        assert_eq!(opt_duration(None), "-");
     }
 
     #[test]

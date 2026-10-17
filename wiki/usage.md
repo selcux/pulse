@@ -9,11 +9,11 @@
 | `pulse sync [provider]` | `--days N` | Sync from all providers, or a specific one (`garmin`, `intervals`) |
 | `pulse rebuild` | — | Refill the data tables from stored provider responses, without network access |
 | `pulse vitality` | `--days N`, `--format FMT`, `--json` | Daily vitality score table |
-| `pulse sleep` | `--days N`, `--format FMT`, `--json` | Sleep data table |
+| `pulse sleep` | `--days N`, `--format FMT`, `--json` | Sleep stages, score, HRV, bed and wake time |
 | `pulse heart` | `--days N`, `--format FMT`, `--json` | Heart rate data |
 | `pulse recovery` | `--days N`, `--format FMT`, `--json` | HRV and recovery scores |
-| `pulse activity` | `--days N`, `--format FMT`, `--json` | Steps and activity |
-| `pulse stress` | `--days N`, `--format FMT`, `--json` | Stress scores |
+| `pulse activity` | `--days N`, `--format FMT`, `--json` | Steps, activity, calories and distance |
+| `pulse stress` | `--days N`, `--format FMT`, `--json` | Stress scores and time at each stress level |
 | `pulse workouts` | `--days N`, `--format FMT`, `--json` | Workout log |
 
 ### Common flags
@@ -34,9 +34,9 @@
 TOON output follows spec 4.4 and may change when the encoder is updated; use `--format json` where a stable interface matters. Every TOON document is a set of named tables, so the output of several commands can be concatenated into one prompt. `pulse sleep --format toon`:
 
 ```text
-sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds,sleep_score,hrv_ms,source}:
-  2026-01-02,27000,6300,5400,14400,900,82,48,garmin
-  2026-01-01,25200,5400,4800,14100,900,null,51.5,garmin
+sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds,sleep_score,hrv_ms,start_time,end_time,spo2_avg,respiration_avg,source}:
+  2026-01-02,27000,6300,5400,14400,900,82,48,"2026-01-01 23:10:00","2026-01-02 06:55:00",95,14.5,garmin
+  2026-01-01,25200,5400,4800,14100,900,null,51.5,null,null,null,null,garmin
 ```
 
 - `workouts` prints a `workouts` table, then `exercise_sets` with one table of sets per workout, keyed by the workout id. The database row id of a set is left out. `exercise_sets: null` means no workout has sets. Its JSON nests the sets inside each workout instead.
@@ -50,10 +50,12 @@ ISON output follows [spec v1.0](https://www.ison.dev/spec.html) and shows the sa
 
 ```text
 table.sleep
-date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_score hrv_ms source
-2026-01-02 27000 6300 5400 14400 900 82 48.0 garmin
-2026-01-01 25200 5400 4800 14100 900 null 51.5 garmin
+date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_score hrv_ms start_time end_time spo2_avg respiration_avg source
+2026-01-02 27000 6300 5400 14400 900 82 48.0 "2026-01-01 23:10:00" "2026-01-02 06:55:00" 95.0 14.5 garmin
+2026-01-01 25200 5400 4800 14100 900 null 51.5 null null null null garmin
 ```
+
+- `start_time` and `end_time` of `sleep` are local wall-clock times, `YYYY-MM-DD HH:MM:SS` with no offset; TOON and ISON quote them.
 
 - Each table is a block: `table.<name>`, a line of field names, then one line per row. Blocks are separated by an empty line.
 - A value is quoted when it holds a space, a quote or a backslash, or would otherwise read as a number, `true`, `false`, `null`, a reference or a comment: `"Bench Press"`, `"21234567890"`.

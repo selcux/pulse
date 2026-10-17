@@ -90,8 +90,22 @@ impl GarminProvider {
                 .and_then(|s| s.overall.as_ref())
                 .and_then(|o| o.value),
             hrv_ms: hrv_avg,
+            start_time: Self::local_datetime(dto.sleep_start_timestamp_local),
+            end_time: Self::local_datetime(dto.sleep_end_timestamp_local),
+            spo2_avg: dto.average_sp_o2_value,
+            respiration_avg: dto.average_respiration_value,
             source: "garmin".into(),
         })
+    }
+
+    /// `YYYY-MM-DD HH:MM:SS` for a Garmin `*TimestampLocal` value. Garmin sends epoch milliseconds
+    /// already shifted to the device's local wall-clock time, so the UTC rendering of it is the
+    /// local time. Integer division drops the milliseconds, as `datetime(ms / 1000, 'unixepoch')`
+    /// does in migration v7; `local_datetime_matches_sqlite_datetime` pins the two together.
+    fn local_datetime(timestamp_ms: Option<i64>) -> Option<String> {
+        // Not `from_timestamp_millis`: it floors negative values, while SQLite truncates them.
+        let datetime = chrono::DateTime::from_timestamp(timestamp_ms? / 1000, 0)?;
+        Some(datetime.format("%Y-%m-%d %H:%M:%S").to_string())
     }
 
     fn map_heart(
@@ -138,6 +152,10 @@ impl GarminProvider {
             steps: summary.total_steps,
             active_minutes,
             floors: summary.floors_ascended.map(|f| f as i32),
+            total_kcal: summary.total_kilocalories,
+            active_kcal: summary.active_kilocalories,
+            bmr_kcal: summary.bmr_kilocalories,
+            distance_meters: summary.total_distance_meters,
             source: "garmin".into(),
         }
     }
@@ -147,6 +165,10 @@ impl GarminProvider {
             date: date.to_string(),
             avg_stress: summary.average_stress_level,
             max_stress: summary.max_stress_level,
+            rest_seconds: summary.rest_stress_duration,
+            low_seconds: summary.low_stress_duration,
+            medium_seconds: summary.medium_stress_duration,
+            high_seconds: summary.high_stress_duration,
             source: "garmin".into(),
         }
     }
@@ -474,7 +496,10 @@ mod tests {
                 rem_sleep_in_seconds: Some(5400),
                 light_sleep_seconds: Some(14400),
                 awake_sleep_seconds: Some(1800),
+                sleep_start_timestamp_local: Some(1772320200999),
+                sleep_end_timestamp_local: Some(1772348100000),
                 average_sp_o2_value: Some(96.0),
+                average_respiration_value: Some(14.5),
                 sleep_scores: Some(SleepScores {
                     overall: Some(SleepScoreValue { value: Some(82) }),
                 }),
@@ -487,6 +512,10 @@ mod tests {
         assert_eq!(sleep.deep_seconds, 7200);
         assert_eq!(sleep.sleep_score, Some(82));
         assert_eq!(sleep.hrv_ms, Some(45.0));
+        assert_eq!(sleep.start_time.as_deref(), Some("2026-02-28 23:10:00"));
+        assert_eq!(sleep.end_time.as_deref(), Some("2026-03-01 06:55:00"));
+        assert_eq!(sleep.spo2_avg, Some(96.0));
+        assert_eq!(sleep.respiration_avg, Some(14.5));
         assert_eq!(sleep.source, "garmin");
     }
 
@@ -499,7 +528,10 @@ mod tests {
                 rem_sleep_in_seconds: Some(5400),
                 light_sleep_seconds: Some(14400),
                 awake_sleep_seconds: Some(1800),
+                sleep_start_timestamp_local: None,
+                sleep_end_timestamp_local: None,
                 average_sp_o2_value: None,
+                average_respiration_value: None,
                 sleep_scores: None,
             }),
         };
@@ -603,6 +635,10 @@ mod tests {
         assert_eq!(activity.steps, Some(12345));
         assert_eq!(activity.active_minutes, Some(60)); // 3600s / 60
         assert_eq!(activity.floors, Some(10));
+        assert_eq!(activity.total_kcal, Some(2450.0));
+        assert_eq!(activity.active_kcal, Some(612.0));
+        assert_eq!(activity.bmr_kcal, Some(1838.0));
+        assert_eq!(activity.distance_meters, Some(8420.0));
     }
 
     #[test]
@@ -612,6 +648,10 @@ mod tests {
         let stress = GarminProvider::map_stress(date, &summary);
         assert_eq!(stress.avg_stress, Some(35));
         assert_eq!(stress.max_stress, Some(78));
+        assert_eq!(stress.rest_seconds, Some(28800));
+        assert_eq!(stress.low_seconds, Some(18000));
+        assert_eq!(stress.medium_seconds, Some(4200));
+        assert_eq!(stress.high_seconds, Some(600));
     }
 
     fn test_daily_summary() -> GarminDailySummaryResponse {
@@ -625,20 +665,24 @@ mod tests {
             floors_ascended: Some(10.0),
             average_stress_level: Some(35),
             max_stress_level: Some(78),
+            rest_stress_duration: Some(28800),
+            low_stress_duration: Some(18000),
+            medium_stress_duration: Some(4200),
+            high_stress_duration: Some(600),
             body_battery_highest_value: Some(95),
             body_battery_lowest_value: Some(25),
-            total_kilocalories: None,
-            active_kilocalories: None,
-            bmr_kilocalories: None,
-            total_distance_meters: None,
+            total_kilocalories: Some(2450.0),
+            active_kilocalories: Some(612.0),
+            bmr_kilocalories: Some(1838.0),
+            total_distance_meters: Some(8420.0),
             vo2_max_value: None,
         }
     }
 
     const DAY: &str = "2026-03-01";
-    const SLEEP_BODY: &str = r#"{"dailySleepDTO":{"sleepTimeInSeconds":28800,"deepSleepSeconds":7200,"remSleepSeconds":5400,"lightSleepSeconds":14400,"awakeSleepSeconds":1800,"sleepScores":{"overall":{"value":82}}},"sleepMovement":[{"activityLevel":0.5}]}"#;
+    const SLEEP_BODY: &str = r#"{"dailySleepDTO":{"sleepTimeInSeconds":28800,"deepSleepSeconds":7200,"remSleepSeconds":5400,"lightSleepSeconds":14400,"awakeSleepSeconds":1800,"sleepStartTimestampLocal":1772320200999,"sleepEndTimestampLocal":1772348100000,"averageSpO2Value":95.0,"averageRespirationValue":14.5,"sleepScores":{"overall":{"value":82}}},"sleepMovement":[{"activityLevel":0.5}]}"#;
     const HRV_BODY: &str = r#"{"hrvSummary":{"lastNightAvg":42.5}}"#;
-    const SUMMARY_BODY: &str = r#"{"restingHeartRate":55,"maxHeartRate":142,"minHeartRate":48,"totalSteps":12345,"activeSeconds":3600,"floorsAscended":10,"averageStressLevel":35,"maxStressLevel":78,"bodyBatteryHighestValue":95,"bodyBatteryLowestValue":25,"vo2MaxValue":48.5,"totalKilocalories":2450.0}"#;
+    const SUMMARY_BODY: &str = r#"{"restingHeartRate":55,"maxHeartRate":142,"minHeartRate":48,"totalSteps":12345,"activeSeconds":3600,"floorsAscended":10,"averageStressLevel":35,"maxStressLevel":78,"bodyBatteryHighestValue":95,"bodyBatteryLowestValue":25,"vo2MaxValue":48.5,"totalKilocalories":2450.0,"activeKilocalories":612.0,"bmrKilocalories":1838.0,"totalDistanceMeters":8420,"restStressDuration":28800,"lowStressDuration":18000,"mediumStressDuration":4200,"highStressDuration":null}"#;
     const BB_BODY: &str = r#"[{"charged":85,"drained":62}]"#;
     /// Modeled on public maxmet samples (docs/plans/2026-10-16-vo2-max.md); not yet checked
     /// against a live response from the owner's account.
@@ -870,6 +914,26 @@ mod tests {
         }
         let sleep = queries::get_sleep(&db, DAY).unwrap().unwrap();
         assert_eq!(sleep.hrv_ms, Some(42.5));
+        assert_eq!(sleep.start_time.as_deref(), Some("2026-02-28 23:10:00"));
+        assert_eq!(sleep.respiration_avg, Some(14.5));
+        let rest_seconds: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT rest_seconds FROM stress WHERE date = ?1",
+                [DAY],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rest_seconds, Some(28800));
+        let total_kcal: Option<f64> = db
+            .conn()
+            .query_row(
+                "SELECT total_kcal FROM activity WHERE date = ?1",
+                [DAY],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_kcal, Some(2450.0));
         assert_eq!(heart_vo2_max(&db, DAY), Some(47.6));
         let drained: Option<i32> = db
             .conn()
@@ -931,5 +995,141 @@ mod tests {
         assert!(report.errors[0].starts_with("2026-03-02 sleep:"));
         assert_eq!(rows_on(&db, "sleep", DAY), 1);
         assert_eq!(report.records_synced, 1);
+    }
+
+    #[test]
+    fn local_datetime_matches_sqlite_datetime() {
+        let db = Database::open_memory().unwrap();
+        for ms in [
+            Some(1792030930000_i64),
+            Some(1792030930999),
+            Some(1792050610000),
+            Some(1772320200999),
+            Some(0),
+            Some(-1500),
+            None,
+        ] {
+            let in_sql: Option<String> = db
+                .conn()
+                .query_row("SELECT datetime(?1 / 1000, 'unixepoch')", [ms], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(GarminProvider::local_datetime(ms), in_sql, "{ms:?}");
+        }
+        assert_eq!(
+            GarminProvider::local_datetime(Some(1792030930999)),
+            Some("2026-10-15 02:22:10".to_string())
+        );
+    }
+
+    /// The v7 migration repeats the Garmin mapping in SQL; both must give the same values.
+    #[test]
+    fn migration_v7_backfill_matches_the_rust_mapping() {
+        let db = Database::open_memory().unwrap();
+        store(&db, GarminEndpoint::Sleep, DAY, SLEEP_BODY);
+        store(&db, GarminEndpoint::DailySummary, DAY, SUMMARY_BODY);
+
+        let sleep = GarminProvider::sleep_from_body(day(), SLEEP_BODY, None)
+            .unwrap()
+            .unwrap();
+        let rows =
+            GarminProvider::daily_from_body(day(), SUMMARY_BODY, None, None, (None, None)).unwrap();
+
+        // Rows as 0.5 left them: the new columns are NULL.
+        queries::upsert_sleep(
+            &db,
+            &Sleep {
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
+                ..sleep.clone()
+            },
+        )
+        .unwrap();
+        queries::upsert_activity(
+            &db,
+            &Activity {
+                total_kcal: None,
+                active_kcal: None,
+                bmr_kcal: None,
+                distance_meters: None,
+                ..rows.activity.clone()
+            },
+        )
+        .unwrap();
+        queries::upsert_stress(
+            &db,
+            &Stress {
+                rest_seconds: None,
+                low_seconds: None,
+                medium_seconds: None,
+                high_seconds: None,
+                ..rows.stress.clone()
+            },
+        )
+        .unwrap();
+
+        crate::db::migrations::migrate_v7(&db).unwrap();
+
+        // Raw SQL, because `query_*` only return recent days and DAY is in the past.
+        let sleep_sql: (Option<String>, Option<String>, Option<f64>, Option<f64>) = db
+            .conn()
+            .query_row(
+                "SELECT start_time, end_time, spo2_avg, respiration_avg FROM sleep WHERE date = ?1",
+                [DAY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        let stress_sql: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = db
+            .conn()
+            .query_row(
+                "SELECT rest_seconds, low_seconds, medium_seconds, high_seconds FROM stress WHERE date = ?1",
+                [DAY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        let activity_sql: (Option<f64>, Option<f64>, Option<f64>, Option<f64>) = db
+            .conn()
+            .query_row(
+                "SELECT total_kcal, active_kcal, bmr_kcal, distance_meters FROM activity WHERE date = ?1",
+                [DAY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            sleep_sql,
+            (
+                sleep.start_time.clone(),
+                sleep.end_time.clone(),
+                sleep.spo2_avg,
+                sleep.respiration_avg
+            )
+        );
+        assert_eq!(
+            stress_sql,
+            (
+                rows.stress.rest_seconds,
+                rows.stress.low_seconds,
+                rows.stress.medium_seconds,
+                rows.stress.high_seconds
+            )
+        );
+        assert_eq!(
+            activity_sql,
+            (
+                rows.activity.total_kcal,
+                rows.activity.active_kcal,
+                rows.activity.bmr_kcal,
+                rows.activity.distance_meters
+            )
+        );
+
+        // Not vacuous: the values are present, and the edge cases hold.
+        assert_eq!(sleep.start_time.as_deref(), Some("2026-02-28 23:10:00"));
+        assert_eq!(rows.stress.high_seconds, None);
+        assert_eq!(rows.activity.distance_meters, Some(8420.0));
     }
 }

@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 6;
+const CURRENT_VERSION: i32 = 7;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -56,6 +56,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v6(db)?;
     }
 
+    if version < 7 {
+        migrate_v7(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -80,6 +84,92 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         rusqlite::params![version.to_string()],
     )?;
     Ok(())
+}
+
+/// Columns added by v7, as `(table, column, SQL type)`.
+const V7_COLUMNS: [(&str, &str, &str); 12] = [
+    ("sleep", "start_time", "TEXT"),
+    ("sleep", "end_time", "TEXT"),
+    ("sleep", "spo2_avg", "REAL"),
+    ("sleep", "respiration_avg", "REAL"),
+    ("stress", "rest_seconds", "INTEGER"),
+    ("stress", "low_seconds", "INTEGER"),
+    ("stress", "medium_seconds", "INTEGER"),
+    ("stress", "high_seconds", "INTEGER"),
+    ("activity", "total_kcal", "REAL"),
+    ("activity", "active_kcal", "REAL"),
+    ("activity", "bmr_kcal", "REAL"),
+    ("activity", "distance_meters", "REAL"),
+];
+
+/// Fills the v7 columns from stored Garmin bodies. Must produce exactly what the Garmin mapping
+/// in `providers::garmin` produces from the same body;
+/// `migration_v7_backfill_matches_the_rust_mapping` pins that. Only rows with a stored body are
+/// written; no row is inserted.
+const V7_BACKFILL: &str = "
+    UPDATE sleep SET
+        start_time      = datetime(json_extract(r.body, '$.dailySleepDTO.sleepStartTimestampLocal') / 1000, 'unixepoch'),
+        end_time        = datetime(json_extract(r.body, '$.dailySleepDTO.sleepEndTimestampLocal') / 1000, 'unixepoch'),
+        spo2_avg        = json_extract(r.body, '$.dailySleepDTO.averageSpO2Value'),
+        respiration_avg = json_extract(r.body, '$.dailySleepDTO.averageRespirationValue')
+    FROM raw_responses AS r
+    WHERE r.provider = 'garmin' AND r.endpoint = 'sleep' AND r.key = sleep.date;
+
+    UPDATE stress SET
+        rest_seconds   = CAST(json_extract(r.body, '$.restStressDuration') AS INTEGER),
+        low_seconds    = CAST(json_extract(r.body, '$.lowStressDuration') AS INTEGER),
+        medium_seconds = CAST(json_extract(r.body, '$.mediumStressDuration') AS INTEGER),
+        high_seconds   = CAST(json_extract(r.body, '$.highStressDuration') AS INTEGER)
+    FROM raw_responses AS r
+    WHERE r.provider = 'garmin' AND r.endpoint = 'daily_summary' AND r.key = stress.date;
+
+    UPDATE activity SET
+        total_kcal      = json_extract(r.body, '$.totalKilocalories'),
+        active_kcal     = json_extract(r.body, '$.activeKilocalories'),
+        bmr_kcal        = json_extract(r.body, '$.bmrKilocalories'),
+        distance_meters = json_extract(r.body, '$.totalDistanceMeters')
+    FROM raw_responses AS r
+    WHERE r.provider = 'garmin' AND r.endpoint = 'daily_summary' AND r.key = activity.date;
+";
+
+/// Adds the sleep, stress and activity columns of issues #2, #8, #9 and #11, and fills them for
+/// every row whose Garmin body is stored in `raw_responses`. Rows without one (days synced before
+/// 0.5.0, or with raw storage off) stay NULL until synced again.
+///
+/// One transaction, safe to run again: an existing column is not added twice and the backfill
+/// writes the same values. That is needed beyond tests, because a 0.5 binary opening a v7
+/// database stamps it back to 6, so the next 0.6 open runs this again.
+pub(crate) fn migrate_v7(db: &Database) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    for (table, column, decl) in V7_COLUMNS {
+        add_column_if_missing(&tx, table, column, decl)?;
+    }
+    tx.execute_batch(V7_BACKFILL)
+        .context("Failed to run v7 migration")?;
+    tx.commit().context("Failed to commit v7 migration")?;
+    Ok(())
+}
+
+/// Adds `column` of type `decl` to `table` unless it is there already: SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`. The arguments are spliced into the SQL; pass constants only.
+fn add_column_if_missing(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<()> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2",
+            rusqlite::params![table, column],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("Failed to look up {table}.{column}"))?;
+    if exists {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))
+        .with_context(|| format!("Failed to add {table}.{column}"))
 }
 
 /// Creates `raw_responses`, which keeps each provider response body as received so the mapped
@@ -353,7 +443,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 6);
+        assert_eq!(CURRENT_VERSION, 7);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -585,5 +675,214 @@ mod tests {
         assert!(insert("<html>").is_err());
         assert!(insert("").is_err());
         assert!(insert("{}").is_ok());
+    }
+
+    /// A database as pulse 0.5.x left it: schema version 6, two days of Garmin rows without the
+    /// v7 columns, and stored bodies for one of those days plus one day that has no rows.
+    fn v6_db_with_garmin_rows() -> Database {
+        let db = v5_db();
+        migrate_v6(&db).unwrap();
+        set_version(&db, 6).unwrap();
+        db.conn()
+            .execute_batch(
+                r#"INSERT INTO sleep (date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds)
+                 VALUES ('2026-03-01', 28800, 7200, 5400, 14400, 1800),
+                        ('2026-03-02', 27000, 6300, 5400, 14400, 900);
+                 INSERT INTO stress (date, avg_stress, max_stress)
+                 VALUES ('2026-03-01', 35, 78), ('2026-03-02', 30, 70);
+                 INSERT INTO activity (date, steps)
+                 VALUES ('2026-03-01', 12345), ('2026-03-02', 8000);
+                 INSERT INTO raw_responses (provider, endpoint, key, body) VALUES
+                 ('garmin', 'sleep', '2026-03-01', '{"dailySleepDTO":{"sleepTimeInSeconds":28800,"sleepStartTimestampLocal":1772320200999,"sleepEndTimestampLocal":1772348100000,"averageSpO2Value":95.0,"averageRespirationValue":14.5}}'),
+                 ('garmin', 'daily_summary', '2026-03-01', '{"totalSteps":12345,"restStressDuration":28800,"lowStressDuration":18000,"mediumStressDuration":4200,"highStressDuration":null,"totalKilocalories":2450.0,"activeKilocalories":612.0,"bmrKilocalories":1838.0,"totalDistanceMeters":8420}'),
+                 ('garmin', 'sleep', '2026-03-03', '{"dailySleepDTO":{"sleepTimeInSeconds":28800,"sleepStartTimestampLocal":1772320200999,"sleepEndTimestampLocal":1772348100000,"averageSpO2Value":95.0,"averageRespirationValue":14.5}}'),
+                 ('garmin', 'daily_summary', '2026-03-03', '{"totalSteps":12345,"restStressDuration":28800,"lowStressDuration":18000,"mediumStressDuration":4200,"highStressDuration":null,"totalKilocalories":2450.0,"activeKilocalories":612.0,"bmrKilocalories":1838.0,"totalDistanceMeters":8420}'),
+                 ('garmin', 'hrv', '2026-03-02', '{"restStressDuration":1,"totalKilocalories":1.0,"dailySleepDTO":{"averageSpO2Value":1.0}}');"#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// `PRAGMA table_info(table)` as `(name, declared type)` pairs.
+    fn columns_of(db: &Database, table: &str) -> Vec<(String, String)> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT name, type FROM pragma_table_info(?1)")
+            .unwrap();
+        stmt.query_map([table], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    fn pairs(columns: &[(&str, &str)]) -> Vec<(String, String)> {
+        columns
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn v7_adds_the_new_columns() {
+        let db = v6_db_with_garmin_rows();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+
+        assert_eq!(
+            columns_of(&db, "sleep"),
+            pairs(&[
+                ("date", "TEXT"),
+                ("total_seconds", "INTEGER"),
+                ("deep_seconds", "INTEGER"),
+                ("rem_seconds", "INTEGER"),
+                ("light_seconds", "INTEGER"),
+                ("awake_seconds", "INTEGER"),
+                ("sleep_score", "INTEGER"),
+                ("hrv_ms", "REAL"),
+                ("source", "TEXT"),
+                ("start_time", "TEXT"),
+                ("end_time", "TEXT"),
+                ("spo2_avg", "REAL"),
+                ("respiration_avg", "REAL"),
+            ])
+        );
+        assert_eq!(
+            columns_of(&db, "stress"),
+            pairs(&[
+                ("date", "TEXT"),
+                ("avg_stress", "INTEGER"),
+                ("max_stress", "INTEGER"),
+                ("source", "TEXT"),
+                ("rest_seconds", "INTEGER"),
+                ("low_seconds", "INTEGER"),
+                ("medium_seconds", "INTEGER"),
+                ("high_seconds", "INTEGER"),
+            ])
+        );
+        assert_eq!(
+            columns_of(&db, "activity"),
+            pairs(&[
+                ("date", "TEXT"),
+                ("steps", "INTEGER"),
+                ("active_minutes", "INTEGER"),
+                ("floors", "INTEGER"),
+                ("source", "TEXT"),
+                ("total_kcal", "REAL"),
+                ("active_kcal", "REAL"),
+                ("bmr_kcal", "REAL"),
+                ("distance_meters", "REAL"),
+            ])
+        );
+    }
+
+    type SleepExtras = (Option<String>, Option<String>, Option<f64>, Option<f64>);
+    type StressExtras = (Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+    type ActivityExtras = (Option<f64>, Option<f64>, Option<f64>, Option<f64>);
+
+    fn sleep_extras(db: &Database, date: &str) -> SleepExtras {
+        db.conn()
+            .query_row(
+                "SELECT start_time, end_time, spo2_avg, respiration_avg FROM sleep WHERE date = ?1",
+                [date],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    }
+
+    fn stress_extras(db: &Database, date: &str) -> StressExtras {
+        db.conn()
+            .query_row(
+                "SELECT rest_seconds, low_seconds, medium_seconds, high_seconds FROM stress WHERE date = ?1",
+                [date],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    }
+
+    fn activity_extras(db: &Database, date: &str) -> ActivityExtras {
+        db.conn()
+            .query_row(
+                "SELECT total_kcal, active_kcal, bmr_kcal, distance_meters FROM activity WHERE date = ?1",
+                [date],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    }
+
+    fn count(db: &Database, table: &str) -> i64 {
+        db.conn()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Asserts the values the fixture's bodies produce, and that the other rows stayed empty.
+    fn assert_v7_backfilled(db: &Database) {
+        assert_eq!(
+            sleep_extras(db, "2026-03-01"),
+            (
+                text("2026-02-28 23:10:00"),
+                text("2026-03-01 06:55:00"),
+                Some(95.0),
+                Some(14.5)
+            )
+        );
+        assert_eq!(
+            stress_extras(db, "2026-03-01"),
+            (Some(28800), Some(18000), Some(4200), None)
+        );
+        assert_eq!(
+            activity_extras(db, "2026-03-01"),
+            (Some(2450.0), Some(612.0), Some(1838.0), Some(8420.0))
+        );
+
+        // The decoy under the `hrv` endpoint was not used.
+        assert_eq!(sleep_extras(db, "2026-03-02"), (None, None, None, None));
+        assert_eq!(stress_extras(db, "2026-03-02"), (None, None, None, None));
+        assert_eq!(activity_extras(db, "2026-03-02"), (None, None, None, None));
+
+        // No row was inserted for the day that only has bodies.
+        assert_eq!(count(db, "sleep"), 2);
+        assert_eq!(count(db, "stress"), 2);
+        assert_eq!(count(db, "activity"), 2);
+
+        // The old columns are untouched.
+        let avg_stress: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT avg_stress FROM stress WHERE date = '2026-03-01'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(avg_stress, Some(35));
+        assert_eq!(set_rows(db), empty_labels_converted());
+    }
+
+    #[test]
+    fn v7_fills_rows_that_have_a_stored_body() {
+        let db = v6_db_with_garmin_rows();
+        run(&db).unwrap();
+        assert_v7_backfilled(&db);
+    }
+
+    #[test]
+    fn v7_runs_with_no_stored_bodies() {
+        let db = v6_db_with_garmin_rows();
+        db.conn().execute("DELETE FROM raw_responses", []).unwrap();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        for date in ["2026-03-01", "2026-03-02"] {
+            assert_eq!(sleep_extras(&db, date), (None, None, None, None));
+            assert_eq!(stress_extras(&db, date), (None, None, None, None));
+            assert_eq!(activity_extras(&db, date), (None, None, None, None));
+        }
+    }
+
+    #[test]
+    fn v7_can_run_twice() {
+        let db = v6_db_with_garmin_rows();
+        migrate_v7(&db).unwrap();
+        migrate_v7(&db).unwrap();
+        assert_v7_backfilled(&db);
     }
 }

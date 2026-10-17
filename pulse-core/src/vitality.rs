@@ -358,6 +358,10 @@ mod tests {
             awake_seconds: 0,
             sleep_score: None,
             hrv_ms: None,
+            start_time: None,
+            end_time: None,
+            spo2_avg: None,
+            respiration_avg: None,
             source: "garmin".into(),
         };
         let score = calculate_sleep_score(&sleep, 8.0);
@@ -376,6 +380,10 @@ mod tests {
             awake_seconds: 0,
             sleep_score: Some(70), // device score
             hrv_ms: None,
+            start_time: None,
+            end_time: None,
+            spo2_avg: None,
+            respiration_avg: None,
             source: "garmin".into(),
         };
         let score = calculate_sleep_score(&sleep, 8.0);
@@ -394,6 +402,10 @@ mod tests {
             awake_seconds: 0,
             sleep_score: None,
             hrv_ms: None,
+            start_time: None,
+            end_time: None,
+            spo2_avg: None,
+            respiration_avg: None,
             source: "garmin".into(),
         };
         let score = calculate_sleep_score(&sleep, 8.0);
@@ -500,6 +512,10 @@ mod tests {
             steps: Some(10_000),
             active_minutes: None,
             floors: None,
+            total_kcal: None,
+            active_kcal: None,
+            bmr_kcal: None,
+            distance_meters: None,
             source: "garmin".into(),
         };
         let score = calculate_activity_score(Some(&activity), 10_000);
@@ -513,6 +529,10 @@ mod tests {
             steps: Some(15_000),
             active_minutes: None,
             floors: None,
+            total_kcal: None,
+            active_kcal: None,
+            bmr_kcal: None,
+            distance_meters: None,
             source: "garmin".into(),
         };
         let score = calculate_activity_score(Some(&activity), 10_000);
@@ -529,6 +549,10 @@ mod tests {
             steps: Some(5_000),
             active_minutes: None,
             floors: None,
+            total_kcal: None,
+            active_kcal: None,
+            bmr_kcal: None,
+            distance_meters: None,
             source: "garmin".into(),
         };
         let score = calculate_activity_score(Some(&activity), 10_000);
@@ -554,6 +578,10 @@ mod tests {
             date: "2026-03-01".into(),
             avg_stress: Some(25),
             max_stress: None,
+            rest_seconds: None,
+            low_seconds: None,
+            medium_seconds: None,
+            high_seconds: None,
             source: "garmin".into(),
         };
         let score = calculate_stress_score(Some(&stress));
@@ -566,6 +594,10 @@ mod tests {
             date: "2026-03-01".into(),
             avg_stress: Some(0),
             max_stress: None,
+            rest_seconds: None,
+            low_seconds: None,
+            medium_seconds: None,
+            high_seconds: None,
             source: "garmin".into(),
         };
         let score = calculate_stress_score(Some(&stress));
@@ -618,6 +650,10 @@ mod tests {
                 awake_seconds: 0,
                 sleep_score: None,
                 hrv_ms: None,
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
                 source: "garmin".into(),
             },
         )
@@ -648,6 +684,10 @@ mod tests {
                 awake_seconds: 0,
                 sleep_score: None,
                 hrv_ms: None,
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
                 source: "garmin".into(),
             },
         )
@@ -754,6 +794,10 @@ mod tests {
                 awake_seconds: 0,
                 sleep_score: None,
                 hrv_ms: None,
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
                 source: "garmin".into(),
             },
         )
@@ -801,6 +845,10 @@ mod tests {
                 awake_seconds: 0,
                 sleep_score: None,
                 hrv_ms: None,
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
                 source: "garmin".into(),
             },
         )
@@ -841,6 +889,10 @@ mod tests {
                 awake_seconds: 1800,
                 sleep_score: Some(80),
                 hrv_ms: None,
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
                 source: "garmin".into(),
             },
         )
@@ -880,6 +932,10 @@ mod tests {
                 steps: Some(10_000), // exactly at target = 100
                 active_minutes: Some(60),
                 floors: Some(10),
+                total_kcal: None,
+                active_kcal: None,
+                bmr_kcal: None,
+                distance_meters: None,
                 source: "garmin".into(),
             },
         )
@@ -891,6 +947,10 @@ mod tests {
                 date: today.clone(),
                 avg_stress: Some(25), // 100 - 25 = 75
                 max_stress: Some(50),
+                rest_seconds: None,
+                low_seconds: None,
+                medium_seconds: None,
+                high_seconds: None,
                 source: "garmin".into(),
             },
         )

@@ -43,6 +43,16 @@ Before 0.5.1, pulse never stored VO2 max. To fill earlier days, sync them once:
 pulse sync garmin --days 30
 ```
 
+### Sleep times, SpO2, respiration, stress breakdown, calories and distance
+
+Since 0.6.0, pulse stores bed and wake time, average SpO2 and respiration during sleep, the time spent at rest and at low, medium and high stress, and the day's calories (total, active, BMR) and distance. When 0.6.0 first opens your database, it fills them for every day synced since 0.5.0, from the stored Garmin responses. Days synced before 0.5.0 stay empty until you sync them once:
+
+```bash
+pulse sync garmin --days 365
+```
+
+Bed and wake times are the watch's local time. SpO2 is recorded only when pulse ox tracking is on.
+
 ---
 
 ## Intervals.icu

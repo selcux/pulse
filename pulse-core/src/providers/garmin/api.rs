@@ -47,7 +47,13 @@ pub struct DailySleepDto {
     pub rem_sleep_in_seconds: Option<i64>,
     pub light_sleep_seconds: Option<i64>,
     pub awake_sleep_seconds: Option<i64>,
+    /// Sleep start, in epoch milliseconds shifted to the device's local wall-clock time (not UTC).
+    pub sleep_start_timestamp_local: Option<i64>,
+    /// Sleep end (wake-up), in epoch milliseconds shifted to local wall-clock time (not UTC).
+    pub sleep_end_timestamp_local: Option<i64>,
     pub average_sp_o2_value: Option<f64>,
+    /// Average respiration rate during sleep, in breaths per minute.
+    pub average_respiration_value: Option<f64>,
     pub sleep_scores: Option<SleepScores>,
 }
 
@@ -111,6 +117,18 @@ pub struct GarminDailySummaryResponse {
     pub average_stress_level: Option<i32>,
     #[serde(default)]
     pub max_stress_level: Option<i32>,
+    /// Seconds at rest (not stressed) during the day.
+    #[serde(default)]
+    pub rest_stress_duration: Option<i64>,
+    /// Seconds at low stress during the day.
+    #[serde(default)]
+    pub low_stress_duration: Option<i64>,
+    /// Seconds at medium stress during the day.
+    #[serde(default)]
+    pub medium_stress_duration: Option<i64>,
+    /// Seconds at high stress during the day.
+    #[serde(default)]
+    pub high_stress_duration: Option<i64>,
     // Body battery fields - may not be in this endpoint
     #[serde(default)]
     pub body_battery_highest_value: Option<i32>,
@@ -360,7 +378,10 @@ mod tests {
                 "remSleepSeconds": 5400,
                 "lightSleepSeconds": 14400,
                 "awakeSleepSeconds": 1800,
+                "sleepStartTimestampLocal": 1772320200999,
+                "sleepEndTimestampLocal": 1772348100000,
                 "averageSpO2Value": 96.0,
+                "averageRespirationValue": 14.5,
                 "sleepScores": {
                     "overall": {
                         "value": 82,
@@ -374,6 +395,10 @@ mod tests {
         assert_eq!(dto.sleep_time_in_seconds, Some(28800));
         assert_eq!(dto.deep_sleep_seconds, Some(7200));
         assert_eq!(dto.rem_sleep_in_seconds, Some(5400));
+        assert_eq!(dto.sleep_start_timestamp_local, Some(1772320200999));
+        assert_eq!(dto.sleep_end_timestamp_local, Some(1772348100000));
+        assert_eq!(dto.average_sp_o2_value, Some(96.0));
+        assert_eq!(dto.average_respiration_value, Some(14.5));
         assert_eq!(dto.sleep_scores.unwrap().overall.unwrap().value, Some(82));
     }
 
@@ -425,9 +450,25 @@ mod tests {
             "averageStressLevel": 35,
             "maxStressLevel": 78,
             "bodyBatteryHighestValue": 95,
-            "bodyBatteryLowestValue": 25
+            "bodyBatteryLowestValue": 25,
+            "restStressDuration": 28800,
+            "lowStressDuration": 18000,
+            "mediumStressDuration": 4200,
+            "highStressDuration": 600,
+            "totalKilocalories": 2450.0,
+            "activeKilocalories": 612.0,
+            "bmrKilocalories": 1838.0,
+            "totalDistanceMeters": 8420
         }"#;
         let resp: GarminDailySummaryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.rest_stress_duration, Some(28800));
+        assert_eq!(resp.low_stress_duration, Some(18000));
+        assert_eq!(resp.medium_stress_duration, Some(4200));
+        assert_eq!(resp.high_stress_duration, Some(600));
+        assert_eq!(resp.total_kilocalories, Some(2450.0));
+        assert_eq!(resp.active_kilocalories, Some(612.0));
+        assert_eq!(resp.bmr_kilocalories, Some(1838.0));
+        assert_eq!(resp.total_distance_meters, Some(8420.0));
         assert_eq!(resp.resting_heart_rate, Some(55));
         assert_eq!(resp.max_heart_rate, Some(142));
         assert_eq!(resp.total_steps, Some(12345));
@@ -460,6 +501,8 @@ mod tests {
         assert_eq!(resp.resting_heart_rate, Some(60));
         assert!(resp.total_steps.is_none());
         assert!(resp.average_stress_level.is_none());
+        assert!(resp.rest_stress_duration.is_none());
+        assert!(resp.high_stress_duration.is_none());
     }
 
     #[test]

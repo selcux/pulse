@@ -1,4 +1,4 @@
-//! Daily activity summary (steps, active minutes, floors).
+//! Daily activity summary (steps, active minutes, floors, calories, distance).
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,14 @@ pub struct Activity {
     pub active_minutes: Option<i32>,
     /// Floors climbed (from barometric altimeter).
     pub floors: Option<i32>,
+    /// Total calories burned during the day (active plus resting), in kcal.
+    pub total_kcal: Option<f64>,
+    /// Calories burned through activity, in kcal.
+    pub active_kcal: Option<f64>,
+    /// Resting (basal metabolic rate) calories, in kcal.
+    pub bmr_kcal: Option<f64>,
+    /// Distance covered during the day, in meters.
+    pub distance_meters: Option<f64>,
     /// Provider that supplied this record (e.g. `"garmin"`).
     pub source: String,
 }

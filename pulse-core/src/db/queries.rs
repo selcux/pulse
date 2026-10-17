@@ -18,8 +18,8 @@ use crate::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Worko
 /// Insert or replace a sleep record for `s.date`.
 pub fn upsert_sleep(db: &Database, s: &Sleep) -> Result<()> {
     db.conn().execute(
-        "INSERT OR REPLACE INTO sleep (date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT OR REPLACE INTO sleep (date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, start_time, end_time, spo2_avg, respiration_avg, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             s.date,
             s.total_seconds,
@@ -29,56 +29,54 @@ pub fn upsert_sleep(db: &Database, s: &Sleep) -> Result<()> {
             s.awake_seconds,
             s.sleep_score,
             s.hrv_ms,
+            s.start_time,
+            s.end_time,
+            s.spo2_avg,
+            s.respiration_avg,
             s.source,
         ],
     )?;
     Ok(())
 }
 
+/// Columns of `sleep` in `Sleep` field order; `sleep_row` reads them by position.
+const SLEEP_COLUMNS: &str = "date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, start_time, end_time, spo2_avg, respiration_avg, source";
+
+/// Map a row selected with `SLEEP_COLUMNS` to a `Sleep`.
+fn sleep_row(row: &rusqlite::Row) -> rusqlite::Result<Sleep> {
+    Ok(Sleep {
+        date: row.get(0)?,
+        total_seconds: row.get(1)?,
+        deep_seconds: row.get(2)?,
+        rem_seconds: row.get(3)?,
+        light_seconds: row.get(4)?,
+        awake_seconds: row.get(5)?,
+        sleep_score: row.get(6)?,
+        hrv_ms: row.get(7)?,
+        start_time: row.get(8)?,
+        end_time: row.get(9)?,
+        spo2_avg: row.get(10)?,
+        respiration_avg: row.get(11)?,
+        source: row.get(12)?,
+    })
+}
+
 /// Return sleep records from the last `days` days, newest-first.
 pub fn query_sleep(db: &Database, days: i32) -> Result<Vec<Sleep>> {
-    let mut stmt = db.conn().prepare(
-        "SELECT date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, source
-         FROM sleep WHERE date >= date('now', ?1) ORDER BY date DESC",
-    )?;
+    let mut stmt = db.conn().prepare(&format!(
+        "SELECT {SLEEP_COLUMNS} FROM sleep WHERE date >= date('now', ?1) ORDER BY date DESC"
+    ))?;
     let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], |row| {
-        Ok(Sleep {
-            date: row.get(0)?,
-            total_seconds: row.get(1)?,
-            deep_seconds: row.get(2)?,
-            rem_seconds: row.get(3)?,
-            light_seconds: row.get(4)?,
-            awake_seconds: row.get(5)?,
-            sleep_score: row.get(6)?,
-            hrv_ms: row.get(7)?,
-            source: row.get(8)?,
-        })
-    })?;
+    let rows = stmt.query_map(params![modifier], sleep_row)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// Return the sleep record for a specific `date` (`YYYY-MM-DD`), or `None`.
 pub fn get_sleep(db: &Database, date: &str) -> Result<Option<Sleep>> {
-    let mut stmt = db.conn().prepare(
-        "SELECT date, total_seconds, deep_seconds, rem_seconds, light_seconds, awake_seconds, sleep_score, hrv_ms, source
-         FROM sleep WHERE date = ?1",
-    )?;
-    let result = stmt
-        .query_row(params![date], |row| {
-            Ok(Sleep {
-                date: row.get(0)?,
-                total_seconds: row.get(1)?,
-                deep_seconds: row.get(2)?,
-                rem_seconds: row.get(3)?,
-                light_seconds: row.get(4)?,
-                awake_seconds: row.get(5)?,
-                sleep_score: row.get(6)?,
-                hrv_ms: row.get(7)?,
-                source: row.get(8)?,
-            })
-        })
-        .optional()?;
+    let mut stmt = db.conn().prepare(&format!(
+        "SELECT {SLEEP_COLUMNS} FROM sleep WHERE date = ?1"
+    ))?;
+    let result = stmt.query_row(params![date], sleep_row).optional()?;
     Ok(result)
 }
 
@@ -208,9 +206,19 @@ pub fn query_recovery(db: &Database, days: i32) -> Result<Vec<Recovery>> {
 /// Insert or replace an activity record for `a.date`.
 pub fn upsert_activity(db: &Database, a: &Activity) -> Result<()> {
     db.conn().execute(
-        "INSERT OR REPLACE INTO activity (date, steps, active_minutes, floors, source)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![a.date, a.steps, a.active_minutes, a.floors, a.source],
+        "INSERT OR REPLACE INTO activity (date, steps, active_minutes, floors, total_kcal, active_kcal, bmr_kcal, distance_meters, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            a.date,
+            a.steps,
+            a.active_minutes,
+            a.floors,
+            a.total_kcal,
+            a.active_kcal,
+            a.bmr_kcal,
+            a.distance_meters,
+            a.source,
+        ],
     )?;
     Ok(())
 }
@@ -218,7 +226,7 @@ pub fn upsert_activity(db: &Database, a: &Activity) -> Result<()> {
 /// Return activity records from the last `days` days, newest-first.
 pub fn query_activity(db: &Database, days: i32) -> Result<Vec<Activity>> {
     let mut stmt = db.conn().prepare(
-        "SELECT date, steps, active_minutes, floors, source
+        "SELECT date, steps, active_minutes, floors, total_kcal, active_kcal, bmr_kcal, distance_meters, source
          FROM activity WHERE date >= date('now', ?1) ORDER BY date DESC",
     )?;
     let modifier = format!("-{days} days");
@@ -228,7 +236,11 @@ pub fn query_activity(db: &Database, days: i32) -> Result<Vec<Activity>> {
             steps: row.get(1)?,
             active_minutes: row.get(2)?,
             floors: row.get(3)?,
-            source: row.get(4)?,
+            total_kcal: row.get(4)?,
+            active_kcal: row.get(5)?,
+            bmr_kcal: row.get(6)?,
+            distance_meters: row.get(7)?,
+            source: row.get(8)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -241,9 +253,18 @@ pub fn query_activity(db: &Database, days: i32) -> Result<Vec<Activity>> {
 /// Insert or replace a stress record for `s.date`.
 pub fn upsert_stress(db: &Database, s: &Stress) -> Result<()> {
     db.conn().execute(
-        "INSERT OR REPLACE INTO stress (date, avg_stress, max_stress, source)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![s.date, s.avg_stress, s.max_stress, s.source],
+        "INSERT OR REPLACE INTO stress (date, avg_stress, max_stress, rest_seconds, low_seconds, medium_seconds, high_seconds, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            s.date,
+            s.avg_stress,
+            s.max_stress,
+            s.rest_seconds,
+            s.low_seconds,
+            s.medium_seconds,
+            s.high_seconds,
+            s.source,
+        ],
     )?;
     Ok(())
 }
@@ -251,7 +272,7 @@ pub fn upsert_stress(db: &Database, s: &Stress) -> Result<()> {
 /// Return stress records from the last `days` days, newest-first.
 pub fn query_stress(db: &Database, days: i32) -> Result<Vec<Stress>> {
     let mut stmt = db.conn().prepare(
-        "SELECT date, avg_stress, max_stress, source
+        "SELECT date, avg_stress, max_stress, rest_seconds, low_seconds, medium_seconds, high_seconds, source
          FROM stress WHERE date >= date('now', ?1) ORDER BY date DESC",
     )?;
     let modifier = format!("-{days} days");
@@ -260,7 +281,11 @@ pub fn query_stress(db: &Database, days: i32) -> Result<Vec<Stress>> {
             date: row.get(0)?,
             avg_stress: row.get(1)?,
             max_stress: row.get(2)?,
-            source: row.get(3)?,
+            rest_seconds: row.get(3)?,
+            low_seconds: row.get(4)?,
+            medium_seconds: row.get(5)?,
+            high_seconds: row.get(6)?,
+            source: row.get(7)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -551,6 +576,10 @@ mod tests {
             awake_seconds: 1800,
             sleep_score: Some(82),
             hrv_ms: Some(45.5),
+            start_time: Some("2026-02-28 23:10:00".into()),
+            end_time: Some("2026-03-01 06:55:00".into()),
+            spo2_avg: Some(95.0),
+            respiration_avg: Some(14.5),
             source: "garmin".into(),
         };
 
@@ -560,6 +589,10 @@ mod tests {
         assert_eq!(fetched.total_seconds, 28800);
         assert_eq!(fetched.sleep_score, Some(82));
         assert!((fetched.hrv_ms.unwrap() - 45.5).abs() < f64::EPSILON);
+        assert_eq!(fetched.start_time.as_deref(), Some("2026-02-28 23:10:00"));
+        assert_eq!(fetched.end_time.as_deref(), Some("2026-03-01 06:55:00"));
+        assert_eq!(fetched.spo2_avg, Some(95.0));
+        assert_eq!(fetched.respiration_avg, Some(14.5));
     }
 
     #[test]
@@ -574,6 +607,10 @@ mod tests {
             awake_seconds: 1800,
             sleep_score: Some(70),
             hrv_ms: None,
+            start_time: None,
+            end_time: None,
+            spo2_avg: None,
+            respiration_avg: None,
             source: "garmin".into(),
         };
 
@@ -706,6 +743,10 @@ mod tests {
             awake_seconds: 2000,
             sleep_score: None,
             hrv_ms: None,
+            start_time: None,
+            end_time: None,
+            spo2_avg: None,
+            respiration_avg: None,
             source: "garmin".into(),
         };
         upsert_sleep(&db, &old).unwrap();
@@ -769,5 +810,58 @@ mod tests {
         let results = query_heart(&db, 7).unwrap();
         assert_eq!(results.len(), 1);
         assert!((results[0].vo2_max.unwrap() - 48.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn activity_upsert_and_query_round_trips_calories_and_distance() {
+        let db = Database::open_memory().unwrap();
+        let today = chrono::Local::now().date_naive().to_string();
+        upsert_activity(
+            &db,
+            &Activity {
+                date: today,
+                steps: Some(12345),
+                active_minutes: Some(60),
+                floors: Some(10),
+                total_kcal: Some(2450.0),
+                active_kcal: Some(612.5),
+                bmr_kcal: Some(1838.0),
+                distance_meters: Some(8420.0),
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+        let results = query_activity(&db, 7).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].total_kcal, Some(2450.0));
+        assert_eq!(results[0].active_kcal, Some(612.5));
+        assert_eq!(results[0].bmr_kcal, Some(1838.0));
+        assert_eq!(results[0].distance_meters, Some(8420.0));
+    }
+
+    #[test]
+    fn stress_upsert_and_query_round_trips_durations() {
+        let db = Database::open_memory().unwrap();
+        let today = chrono::Local::now().date_naive().to_string();
+        upsert_stress(
+            &db,
+            &Stress {
+                date: today,
+                avg_stress: Some(35),
+                max_stress: Some(78),
+                rest_seconds: Some(28800),
+                low_seconds: Some(18000),
+                medium_seconds: Some(4200),
+                high_seconds: None,
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+        let results = query_stress(&db, 7).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rest_seconds, Some(28800));
+        assert_eq!(results[0].low_seconds, Some(18000));
+        assert_eq!(results[0].medium_seconds, Some(4200));
+        assert_eq!(results[0].high_seconds, None);
     }
 }

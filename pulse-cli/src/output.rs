@@ -235,6 +235,10 @@ mod tests {
                 awake_seconds: 900,
                 sleep_score: Some(82),
                 hrv_ms: Some(48.0),
+                start_time: Some("2026-01-01 23:10:00".into()),
+                end_time: Some("2026-01-02 06:55:00".into()),
+                spo2_avg: Some(95.0),
+                respiration_avg: Some(14.5),
                 source: "garmin".into(),
             },
             Sleep {
@@ -246,6 +250,10 @@ mod tests {
                 awake_seconds: 900,
                 sleep_score: None,
                 hrv_ms: Some(51.5),
+                start_time: None,
+                end_time: None,
+                spo2_avg: None,
+                respiration_avg: None,
                 source: "garmin".into(),
             },
         ]
@@ -399,6 +407,10 @@ mod tests {
     "awake_seconds": 900,
     "sleep_score": 82,
     "hrv_ms": 48.0,
+    "start_time": "2026-01-01 23:10:00",
+    "end_time": "2026-01-02 06:55:00",
+    "spo2_avg": 95.0,
+    "respiration_avg": 14.5,
     "source": "garmin"
   },
   {
@@ -410,6 +422,10 @@ mod tests {
     "awake_seconds": 900,
     "sleep_score": null,
     "hrv_ms": 51.5,
+    "start_time": null,
+    "end_time": null,
+    "spo2_avg": null,
+    "respiration_avg": null,
     "source": "garmin"
   }
 ]"#;
@@ -555,14 +571,18 @@ mod tests {
             steps: None,
             active_minutes: None,
             floors: None,
+            total_kcal: None,
+            active_kcal: None,
+            bmr_kcal: None,
+            distance_meters: None,
             source: (*s).to_string(),
         })
         .collect()
     }
 
-    const SLEEP_TOON: &str = r#"sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds,sleep_score,hrv_ms,source}:
-  2026-01-02,27000,6300,5400,14400,900,82,48,garmin
-  2026-01-01,25200,5400,4800,14100,900,null,51.5,garmin"#;
+    const SLEEP_TOON: &str = r#"sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds,sleep_score,hrv_ms,start_time,end_time,spo2_avg,respiration_avg,source}:
+  2026-01-02,27000,6300,5400,14400,900,82,48,"2026-01-01 23:10:00","2026-01-02 06:55:00",95,14.5,garmin
+  2026-01-01,25200,5400,4800,14100,900,null,51.5,null,null,null,null,garmin"#;
 
     const WORKOUTS_TOON: &str = r#"workouts[3]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,source}:
   i101,"Push day, heavy","2026-01-02T07:30:00",3600,WeightTraining,410,118,152,intervals
@@ -651,30 +671,30 @@ scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_scor
   2026-01-02,78.4,90.2,71.2,100,75,64.3"#;
 
     // `"#tag"` ends an `r#"..."#` literal, hence the extra hash.
-    const QUOTING_TOON: &str = r##"activity[18]{date,steps,active_minutes,floors,source}:
-  2026-01-01,null,null,null,"a,b"
-  2026-01-01,null,null,null,"a: b"
-  2026-01-01,null,null,null,"say \"hi\""
-  2026-01-01,null,null,null,"-lead"
-  2026-01-01,null,null,null,"#tag"
-  2026-01-01,null,null,null,"true"
-  2026-01-01,null,null,null,"null"
-  2026-01-01,null,null,null,"123"
-  2026-01-01,null,null,null,"1e5"
-  2026-01-01,null,null,null,""
-  2026-01-01,null,null,null," pad "
-  2026-01-01,null,null,null,"line\nbreak"
-  2026-01-01,null,null,null,"back\\slash"
-  2026-01-01,null,null,null,"[x]"
-  2026-01-01,null,null,null,café — ok
-  2026-01-01,null,null,null,plain text
-  2026-01-01,null,null,null,pull-up
-  2026-01-01,null,null,null,2026-01-02"##;
+    const QUOTING_TOON: &str = r##"activity[18]{date,steps,active_minutes,floors,total_kcal,active_kcal,bmr_kcal,distance_meters,source}:
+  2026-01-01,null,null,null,null,null,null,null,"a,b"
+  2026-01-01,null,null,null,null,null,null,null,"a: b"
+  2026-01-01,null,null,null,null,null,null,null,"say \"hi\""
+  2026-01-01,null,null,null,null,null,null,null,"-lead"
+  2026-01-01,null,null,null,null,null,null,null,"#tag"
+  2026-01-01,null,null,null,null,null,null,null,"true"
+  2026-01-01,null,null,null,null,null,null,null,"null"
+  2026-01-01,null,null,null,null,null,null,null,"123"
+  2026-01-01,null,null,null,null,null,null,null,"1e5"
+  2026-01-01,null,null,null,null,null,null,null,""
+  2026-01-01,null,null,null,null,null,null,null," pad "
+  2026-01-01,null,null,null,null,null,null,null,"line\nbreak"
+  2026-01-01,null,null,null,null,null,null,null,"back\\slash"
+  2026-01-01,null,null,null,null,null,null,null,"[x]"
+  2026-01-01,null,null,null,null,null,null,null,café — ok
+  2026-01-01,null,null,null,null,null,null,null,plain text
+  2026-01-01,null,null,null,null,null,null,null,pull-up
+  2026-01-01,null,null,null,null,null,null,null,2026-01-02"##;
 
     const SLEEP_ISON: &str = r#"table.sleep
-date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_score hrv_ms source
-2026-01-02 27000 6300 5400 14400 900 82 48.0 garmin
-2026-01-01 25200 5400 4800 14100 900 null 51.5 garmin"#;
+date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_score hrv_ms start_time end_time spo2_avg respiration_avg source
+2026-01-02 27000 6300 5400 14400 900 82 48.0 "2026-01-01 23:10:00" "2026-01-02 06:55:00" 95.0 14.5 garmin
+2026-01-01 25200 5400 4800 14100 900 null 51.5 null null null null garmin"#;
 
     const WORKOUTS_ISON: &str = r#"table.workouts
 id name start_time duration_seconds activity_type calories avg_hr max_hr source
@@ -728,25 +748,25 @@ date total_score sleep_score recovery_score activity_score stress_score fitness_
 
     // `"#tag"` ends an `r#"..."#` literal, hence the extra hash.
     const QUOTING_ISON: &str = r##"table.activity
-date steps active_minutes floors source
-2026-01-01 null null null a,b
-2026-01-01 null null null "a: b"
-2026-01-01 null null null "say \"hi\""
-2026-01-01 null null null -lead
-2026-01-01 null null null "#tag"
-2026-01-01 null null null "true"
-2026-01-01 null null null "null"
-2026-01-01 null null null "123"
-2026-01-01 null null null "1e5"
-2026-01-01 null null null ""
-2026-01-01 null null null " pad "
-2026-01-01 null null null "line\nbreak"
-2026-01-01 null null null "back\\slash"
-2026-01-01 null null null [x]
-2026-01-01 null null null "café — ok"
-2026-01-01 null null null "plain text"
-2026-01-01 null null null pull-up
-2026-01-01 null null null 2026-01-02"##;
+date steps active_minutes floors total_kcal active_kcal bmr_kcal distance_meters source
+2026-01-01 null null null null null null null a,b
+2026-01-01 null null null null null null null "a: b"
+2026-01-01 null null null null null null null "say \"hi\""
+2026-01-01 null null null null null null null -lead
+2026-01-01 null null null null null null null "#tag"
+2026-01-01 null null null null null null null "true"
+2026-01-01 null null null null null null null "null"
+2026-01-01 null null null null null null null "123"
+2026-01-01 null null null null null null null "1e5"
+2026-01-01 null null null null null null null ""
+2026-01-01 null null null null null null null " pad "
+2026-01-01 null null null null null null null "line\nbreak"
+2026-01-01 null null null null null null null "back\\slash"
+2026-01-01 null null null null null null null [x]
+2026-01-01 null null null null null null null "café — ok"
+2026-01-01 null null null null null null null "plain text"
+2026-01-01 null null null null null null null pull-up
+2026-01-01 null null null null null null null 2026-01-02"##;
 
     fn toon(report: &impl Report) -> String {
         render(OutputFormat::Toon, report)
