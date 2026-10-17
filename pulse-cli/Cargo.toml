@@ -11,7 +11,7 @@ keywords = ["health", "garmin", "cli", "fitness", "wearable"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-pulse-health-core = { path = "../pulse-core", version = "0.6.1" }
+pulse-health-core = { path = "../pulse-core", version = "0.7.0" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = "1"
