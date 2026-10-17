@@ -21,6 +21,12 @@ pub struct Workout {
     pub avg_hr: Option<i32>,
     /// Peak heart rate during the workout (bpm).
     pub max_hr: Option<i32>,
+    /// Distance covered, in meters. `None` when the provider recorded no distance (strength
+    /// training, for example).
+    pub distance_meters: Option<f64>,
+    /// Average speed over the workout as the recording device reported it, in meters per second.
+    /// `None` when not recorded. Pace per kilometer is `1000 / avg_speed_mps` seconds.
+    pub avg_speed_mps: Option<f64>,
     /// Provider that supplied this record (e.g. `"intervals"`, `"garmin"`).
     pub source: String,
 }

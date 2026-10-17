@@ -74,6 +74,16 @@ api_key = "your-api-key"
 pulse sync intervals
 ```
 
+### Distance and pace
+
+Since 0.9.0, pulse stores each workout's distance and average speed, and `pulse workouts` shows distance in km and pace per km. When 0.9.0 first opens your database, it fills them for every workout synced since 0.5.0, from the stored Intervals.icu responses. Older workouts stay empty until you sync them once:
+
+```bash
+pulse sync intervals --from 2026-01-01
+```
+
+Pace comes from the average speed your watch recorded, so it can differ slightly from duration divided by distance: the duration is Intervals.icu's moving time.
+
 ---
 
 ## Syncing Both Providers

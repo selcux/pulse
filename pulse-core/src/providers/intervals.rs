@@ -35,6 +35,11 @@ struct ApiActivity {
     calories: Option<f64>,
     average_heartrate: Option<f64>,
     max_heartrate: Option<f64>,
+    /// Distance in meters. Null, missing or 0 for an activity without distance.
+    distance: Option<f64>,
+    /// Average speed in meters per second, as the device recorded it. Not the body's `pace`
+    /// field, which despite its name is also m/s (distance / moving_time).
+    average_speed: Option<f64>,
     /// Garmin Connect activity ID — used to fetch exercise sets.
     external_id: Option<String>,
 }
@@ -274,6 +279,8 @@ impl IntervalsProvider {
             calories: api.calories.map(|c| c as i32),
             avg_hr: api.average_heartrate.map(|h| h as i32),
             max_hr: api.max_heartrate.map(|h| h as i32),
+            distance_meters: api.distance.filter(|d| *d > 0.0),
+            avg_speed_mps: api.average_speed.filter(|s| *s > 0.0),
             source: "intervals".into(),
         }
     }
@@ -459,6 +466,8 @@ mod tests {
             calories: Some(350.0),
             average_heartrate: Some(120.0),
             max_heartrate: Some(155.0),
+            distance: None,
+            average_speed: None,
             external_id: Some("22005844470".into()),
         };
         let w = IntervalsProvider::map_workout(&api);
@@ -467,7 +476,67 @@ mod tests {
         assert_eq!(w.duration_seconds, 3600);
         assert_eq!(w.calories, Some(350));
         assert_eq!(w.avg_hr, Some(120));
+        assert_eq!(w.distance_meters, None);
+        assert_eq!(w.avg_speed_mps, None);
         assert_eq!(w.source, "intervals");
+    }
+
+    /// An activity as the API sends it, with only the distance and speed under test filled in.
+    fn walk_with(distance: Option<f64>, average_speed: Option<f64>) -> ApiActivity {
+        ApiActivity {
+            id: "i1".into(),
+            name: None,
+            start_date_local: "2026-10-15T07:00:00".into(),
+            moving_time: Some(3540),
+            activity_type: Some("Walk".into()),
+            icu_training_load: None,
+            calories: None,
+            average_heartrate: None,
+            max_heartrate: None,
+            distance,
+            average_speed,
+            external_id: None,
+        }
+    }
+
+    #[test]
+    fn map_workout_keeps_distance_and_speed() {
+        let w = IntervalsProvider::map_workout(&walk_with(Some(5043.21), Some(1.417)));
+        assert_eq!(w.distance_meters, Some(5043.21));
+        assert_eq!(w.avg_speed_mps, Some(1.417));
+    }
+
+    #[test]
+    fn map_workout_treats_zero_or_negative_as_absent() {
+        for value in [0.0, -1.0] {
+            let w = IntervalsProvider::map_workout(&walk_with(Some(value), Some(value)));
+            assert_eq!(w.distance_meters, None, "distance {value}");
+            assert_eq!(w.avg_speed_mps, None, "speed {value}");
+        }
+    }
+
+    #[test]
+    fn parse_activity_reads_distance_and_average_speed() {
+        let read = |body: &str| {
+            let api = parse_activity(body).unwrap();
+            (api.distance, api.average_speed)
+        };
+        assert_eq!(
+            read(
+                r#"{"id":"i1","start_date_local":"2026-10-15T07:00:00","distance":5043.21,"average_speed":1.417,"pace":1.4375}"#
+            ),
+            (Some(5043.21), Some(1.417))
+        );
+        assert_eq!(
+            read(
+                r#"{"id":"i2","start_date_local":"2026-10-15T07:00:00","distance":1670,"average_speed":null}"#
+            ),
+            (Some(1670.0), None)
+        );
+        assert_eq!(
+            read(r#"{"id":"i3","start_date_local":"2026-10-15T07:00:00"}"#),
+            (None, None)
+        );
     }
 
     #[test]
@@ -622,7 +691,7 @@ mod tests {
 
     const ACTIVITIES_BODY: &str = r#"[
   {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"external_id":"22005844470","icu_ftp":1.50},
-  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "distance": 5012.5}
+  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "average_speed": 2.9, "distance": 5012.5}
 ]"#;
     const SETS_BODY: &str = r#"{"exerciseSets":[{"exercises":[{"category":"BENCH_PRESS","name":"BARBELL_BENCH_PRESS"}],"repetitionCount":10,"weight":60000.0,"setType":"ACTIVE"},{"exercises":[],"setType":"REST"}]}"#;
 
@@ -726,7 +795,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(activity_type, "Run");
+        let extras = |id: &str| -> (Option<f64>, Option<f64>) {
+            db.conn()
+                .query_row(
+                    "SELECT distance_meters, avg_speed_mps FROM workouts WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(extras("i102"), (Some(5012.5), Some(2.9)));
+        assert_eq!(extras("i101"), (None, None));
         assert_eq!(queries::query_exercise_sets(&db, "i101").unwrap().len(), 1);
+    }
+
+    /// The v8 migration repeats `map_workout`'s distance and speed rules in SQL. Both must give
+    /// the same values for the same stored body.
+    #[test]
+    fn migration_v8_backfill_matches_the_rust_mapping() {
+        let bodies = [
+            r#"{"id":"i301","start_date_local":"2026-10-15T07:00:00","type":"Walk","moving_time":3540,"distance":5043.21,"average_speed":1.417,"pace":1.4375}"#,
+            r#"{"id":"i302","start_date_local":"2026-10-14T18:00:00","type":"WeightTraining","moving_time":3600,"distance":0,"average_speed":0.0}"#,
+            r#"{"id":"i303","start_date_local":"2026-10-13T07:00:00","type":"Walk","distance":1670,"average_speed":null}"#,
+            r#"{"id":"i304","start_date_local":"2026-10-12T07:00:00","type":"Run"}"#,
+            r#"{"id":"i305","start_date_local":"2026-10-11T07:00:00","type":"Run","distance":-5.0,"average_speed":-1.0}"#,
+        ];
+        let db = Database::open_memory().unwrap();
+        let mut mapped = Vec::new();
+        for body in bodies {
+            let w = IntervalsProvider::map_workout(&parse_activity(body).unwrap());
+            queries::upsert_raw_response(&db, PROVIDER, ACTIVITY_ENDPOINT, &w.id, body).unwrap();
+            // The row as 0.8 left it: no distance, no speed.
+            let before = Workout {
+                distance_meters: None,
+                avg_speed_mps: None,
+                ..w.clone()
+            };
+            queries::upsert_workout(&db, &before).unwrap();
+            mapped.push(w);
+        }
+
+        crate::db::migrations::migrate_v8(&db).unwrap();
+
+        for w in &mapped {
+            let stored: (Option<f64>, Option<f64>) = db
+                .conn()
+                .query_row(
+                    "SELECT distance_meters, avg_speed_mps FROM workouts WHERE id = ?1",
+                    [&w.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, (w.distance_meters, w.avg_speed_mps), "{}", w.id);
+        }
+        // Not vacuous: the mapped values themselves are what the bodies say.
+        let values = |i: usize| (mapped[i].distance_meters, mapped[i].avg_speed_mps);
+        assert_eq!(values(0), (Some(5043.21), Some(1.417)));
+        assert_eq!(values(1), (None, None));
+        assert_eq!(values(2), (Some(1670.0), None));
     }
 
     #[test]

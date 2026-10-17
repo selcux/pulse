@@ -84,7 +84,7 @@ enum Commands {
         #[command(flatten)]
         output: StoredOutputArgs,
     },
-    /// Show workouts and exercise sets
+    /// Show workouts with distance, pace and exercise sets
     Workouts {
         #[command(flatten)]
         range: RangeArgs,
@@ -456,23 +456,7 @@ fn cmd_workouts(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::
     }
 
     for (w, sets) in &entries {
-        let duration = format_duration(w.duration_seconds);
-        let cal = match w.calories {
-            Some(c) => format!("{}cal", c),
-            None => "-".into(),
-        };
-        let hr = match w.avg_hr {
-            Some(h) => format!("avg HR {}", h),
-            None => "no HR".into(),
-        };
-        let label = match &w.name {
-            Some(n) => format!("{} \u{2014} {}", n, w.activity_type),
-            None => w.activity_type.clone(),
-        };
-        println!(
-            "[{}] {} ({}, {}, {})",
-            w.start_time, label, duration, cal, hr
-        );
+        println!("{}", format_workout_line(w));
 
         for s in sets {
             println!("{}", format_exercise_set(s));
@@ -483,6 +467,31 @@ fn cmd_workouts(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::
     }
 
     Ok(())
+}
+
+/// The workout log line: `[start] label (duration[, distance][, pace], kcal, HR)`. Distance and
+/// pace are left out when absent, so a strength workout reads as before.
+fn format_workout_line(w: &Workout) -> String {
+    let mut parts = vec![format_duration(w.duration_seconds)];
+    if let Some(meters) = w.distance_meters {
+        parts.push(format!("{:.2} km", meters / 1000.0));
+    }
+    if let Some(pace) = table::pace_per_km(w.avg_speed_mps) {
+        parts.push(format!("{pace} /km"));
+    }
+    parts.push(match w.calories {
+        Some(c) => format!("{}cal", c),
+        None => "-".into(),
+    });
+    parts.push(match w.avg_hr {
+        Some(h) => format!("avg HR {}", h),
+        None => "no HR".into(),
+    });
+    let label = match &w.name {
+        Some(n) => format!("{} \u{2014} {}", n, w.activity_type),
+        None => w.activity_type.clone(),
+    };
+    format!("[{}] {} ({})", w.start_time, label, parts.join(", "))
 }
 
 /// Name column text: the exercise name, else the category in parentheses so it
@@ -719,6 +728,57 @@ mod tests {
         assert_eq!(
             format_exercise_set(&exercise_set(None, None)),
             "   2. -                      8 x 62.5kg"
+        );
+    }
+
+    fn workout(distance: Option<f64>, speed: Option<f64>) -> Workout {
+        Workout {
+            id: "i201".into(),
+            name: None,
+            start_time: "2026-10-15T07:00:00".into(),
+            duration_seconds: 3540,
+            activity_type: "Walk".into(),
+            calories: Some(287),
+            avg_hr: Some(104),
+            max_hr: None,
+            distance_meters: distance,
+            avg_speed_mps: speed,
+            source: "intervals".into(),
+        }
+    }
+
+    #[test]
+    fn workout_line_shows_distance_and_pace() {
+        assert_eq!(
+            format_workout_line(&workout(Some(5043.21), Some(1.417))),
+            "[2026-10-15T07:00:00] Walk (59m, 5.04 km, 11:46 /km, 287cal, avg HR 104)"
+        );
+    }
+
+    #[test]
+    fn workout_line_leaves_out_a_missing_or_zero_pace() {
+        for speed in [None, Some(0.0)] {
+            assert_eq!(
+                format_workout_line(&workout(Some(5043.21), speed)),
+                "[2026-10-15T07:00:00] Walk (59m, 5.04 km, 287cal, avg HR 104)"
+            );
+        }
+    }
+
+    #[test]
+    fn workout_line_without_distance_is_unchanged() {
+        let w = Workout {
+            name: Some("Upper Body".into()),
+            activity_type: "WeightTraining".into(),
+            start_time: "2026-01-02T07:30:00".into(),
+            duration_seconds: 3900,
+            calories: Some(320),
+            avg_hr: Some(112),
+            ..workout(None, None)
+        };
+        assert_eq!(
+            format_workout_line(&w),
+            "[2026-01-02T07:30:00] Upper Body \u{2014} WeightTraining (1h 05m, 320cal, avg HR 112)"
         );
     }
 

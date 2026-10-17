@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 7;
+const CURRENT_VERSION: i32 = 8;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -74,6 +74,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v7(db)?;
     }
 
+    if version < 8 {
+        migrate_v8(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -97,6 +101,45 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Columns added by v8, as `(table, column, SQL type)`.
+const V8_COLUMNS: [(&str, &str, &str); 2] = [
+    ("workouts", "distance_meters", "REAL"),
+    ("workouts", "avg_speed_mps", "REAL"),
+];
+
+/// Fills the v8 columns from stored Intervals.icu activity bodies. Must produce exactly what
+/// `IntervalsProvider::map_workout` produces from the same body: a value that is not above zero
+/// is NULL, and so is a JSON string, which serde rejects (SQLite would rank TEXT above any
+/// number). `migration_v8_backfill_matches_the_rust_mapping` pins that. Only rows with a stored
+/// body are written; no row is inserted.
+const V8_BACKFILL: &str = "
+    UPDATE workouts SET
+        distance_meters = CASE WHEN json_type(r.body, '$.distance') IN ('real', 'integer')
+                                AND json_extract(r.body, '$.distance') > 0
+                               THEN json_extract(r.body, '$.distance') END,
+        avg_speed_mps   = CASE WHEN json_type(r.body, '$.average_speed') IN ('real', 'integer')
+                                AND json_extract(r.body, '$.average_speed') > 0
+                               THEN json_extract(r.body, '$.average_speed') END
+    FROM raw_responses AS r
+    WHERE r.provider = 'intervals' AND r.endpoint = 'activity' AND r.key = workouts.id;
+";
+
+/// Adds `workouts.distance_meters` and `workouts.avg_speed_mps` (issue #5), and fills them for
+/// every workout whose Intervals.icu body is stored in `raw_responses`. Workouts without one
+/// (synced before 0.5.0, or with raw storage off) stay NULL until synced again.
+///
+/// One transaction, safe to run again for the same reason as `migrate_v7`.
+pub(crate) fn migrate_v8(db: &Database) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    for (table, column, decl) in V8_COLUMNS {
+        add_column_if_missing(&tx, table, column, decl)?;
+    }
+    tx.execute_batch(V8_BACKFILL)
+        .context("Failed to run v8 migration")?;
+    tx.commit().context("Failed to commit v8 migration")?;
     Ok(())
 }
 
@@ -457,7 +500,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 7);
+        assert_eq!(CURRENT_VERSION, 8);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -926,5 +969,137 @@ mod tests {
         migrate_v7(&db).unwrap();
         migrate_v7(&db).unwrap();
         assert_v7_backfilled(&db);
+    }
+
+    /// A database as pulse 0.6 to 0.8 left it: schema version 7, workouts without the v8 columns,
+    /// and stored Intervals.icu activity bodies for some of them.
+    fn v7_db_with_workouts() -> Database {
+        let db = v6_db_with_garmin_rows();
+        migrate_v7(&db).unwrap();
+        set_version(&db, 7).unwrap();
+        db.conn()
+            .execute_batch(
+                r#"INSERT INTO workouts (id, start_time, duration_seconds, activity_type) VALUES
+                 ('i201', '2026-10-13T07:00:00', 3540, 'Walk'),
+                 ('i202', '2026-10-14T18:00:00', 3600, 'WeightTraining'),
+                 ('i203', '2026-10-15T07:00:00', 1800, 'Run'),
+                 ('i205', '2026-10-15T09:00:00', 1200, 'Walk'),
+                 ('i206', '2026-10-15T10:00:00', 600, 'Walk');
+                 INSERT INTO raw_responses (provider, endpoint, key, body) VALUES
+                 ('intervals', 'activity', 'i201', '{"id":"i201","type":"Walk","distance":5043.21,"average_speed":1.417,"pace":1.4375}'),
+                 ('intervals', 'activity', 'i202', '{"id":"i202","type":"WeightTraining","distance":0,"average_speed":0.0}'),
+                 ('intervals', 'activity', 'i205', '{"id":"i205","type":"Walk","distance":1670,"average_speed":null}'),
+                 ('intervals', 'activity', 'i206', '{"id":"i206","type":"Walk","distance":"5000","average_speed":"1.4"}'),
+                 ('intervals', 'activity', 'i204','{"id":"i204","type":"Walk","distance":1702.5,"average_speed":1.3}'),
+                 ('garmin', 'activity', 'i203', '{"distance":1.0,"average_speed":1.0}');"#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// `(distance_meters, avg_speed_mps)` of one workout.
+    fn workout_extras(db: &Database, id: &str) -> (Option<f64>, Option<f64>) {
+        db.conn()
+            .query_row(
+                "SELECT distance_meters, avg_speed_mps FROM workouts WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn v8_adds_the_workout_columns() {
+        let db = v7_db_with_workouts();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+
+        assert_eq!(
+            columns_of(&db, "workouts"),
+            pairs(&[
+                ("id", "TEXT"),
+                ("start_time", "TEXT"),
+                ("duration_seconds", "INTEGER"),
+                ("activity_type", "TEXT"),
+                ("calories", "INTEGER"),
+                ("avg_hr", "INTEGER"),
+                ("max_hr", "INTEGER"),
+                ("source", "TEXT"),
+                ("name", "TEXT"),
+                ("distance_meters", "REAL"),
+                ("avg_speed_mps", "REAL"),
+            ])
+        );
+    }
+
+    /// Asserts the values the fixture's bodies produce, and that the other rows stayed empty.
+    fn assert_v8_backfilled(db: &Database) {
+        assert_eq!(
+            workout_extras(db, "i201"),
+            (Some(5043.21), Some(1.417)),
+            "a stored body fills both columns"
+        );
+        assert_eq!(
+            workout_extras(db, "i202"),
+            (None, None),
+            "zeros become NULL"
+        );
+        assert_eq!(
+            workout_extras(db, "i203"),
+            (None, None),
+            "the decoy under another provider was not used"
+        );
+        assert_eq!(
+            workout_extras(db, "i205"),
+            (Some(1670.0), None),
+            "a JSON integer becomes REAL and null stays NULL"
+        );
+        assert_eq!(
+            workout_extras(db, "i206"),
+            (None, None),
+            "a JSON string is not a number"
+        );
+        assert_eq!(workout_extras(db, "w1"), (None, None));
+
+        // No row was inserted for the body that has no workout.
+        assert_eq!(count(db, "workouts"), 6);
+
+        // The old columns are untouched.
+        let duration: i64 = db
+            .conn()
+            .query_row(
+                "SELECT duration_seconds FROM workouts WHERE id = 'i201'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(duration, 3540);
+        assert_eq!(set_rows(db), empty_labels_converted());
+    }
+
+    #[test]
+    fn v8_fills_workouts_that_have_a_stored_body() {
+        let db = v7_db_with_workouts();
+        run(&db).unwrap();
+        assert_v8_backfilled(&db);
+    }
+
+    #[test]
+    fn v8_runs_with_no_stored_bodies() {
+        let db = v7_db_with_workouts();
+        db.conn().execute("DELETE FROM raw_responses", []).unwrap();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        for id in ["w1", "i201", "i202", "i203", "i205", "i206"] {
+            assert_eq!(workout_extras(&db, id), (None, None), "{id}");
+        }
+    }
+
+    #[test]
+    fn v8_can_run_twice() {
+        let db = v7_db_with_workouts();
+        migrate_v8(&db).unwrap();
+        migrate_v8(&db).unwrap();
+        assert_v8_backfilled(&db);
     }
 }

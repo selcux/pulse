@@ -342,6 +342,12 @@ pub const WORKOUT_COLUMNS: &[Column<Workout>] = &[
     Column::right("calories", "kcal", 4, |w| opt_i32(w.calories)),
     Column::right("avg_hr", "Avg HR", 6, |w| opt_i32(w.avg_hr)),
     Column::right("max_hr", "Max HR", 6, |w| opt_i32(w.max_hr)),
+    Column::right("distance_meters", "Dist km", 7, |w| {
+        opt_f64(w.distance_meters.map(|m| m / 1000.0), 2)
+    }),
+    Column::right("avg_speed_mps", "Pace /km", 8, |w| {
+        opt_str(pace_per_km(w.avg_speed_mps).as_deref())
+    }),
     Column::left("source", "Source", 6, |w| w.source.clone()),
 ];
 
@@ -419,6 +425,14 @@ pub fn weight_or_bw(val: Option<f64>) -> String {
         Some(w) => format!("{w:.1}kg"),
         None => "BW".into(),
     }
+}
+
+/// Minutes and seconds per kilometer (`M:SS`) at `speed_mps` meters per second; `None` when the
+/// speed is absent, not finite, or not above zero. Rounds to whole seconds before splitting.
+pub fn pace_per_km(speed_mps: Option<f64>) -> Option<String> {
+    let speed = speed_mps.filter(|s| s.is_finite() && *s > 0.0)?;
+    let secs = (1000.0 / speed).round() as i64;
+    Some(format!("{}:{:02}", secs / 60, secs % 60))
 }
 
 #[cfg(test)]
@@ -534,6 +548,28 @@ mod tests {
         assert_eq!(weight_or_bw(Some(62.5)), "62.5kg");
         assert_eq!(weight_or_bw(Some(80.0)), "80.0kg");
         assert_eq!(weight_or_bw(None), "BW");
+    }
+
+    #[test]
+    fn pace_per_km_formats_minutes_and_seconds() {
+        assert_eq!(pace_per_km(Some(1.417)).as_deref(), Some("11:46"));
+        assert_eq!(pace_per_km(Some(2.9)).as_deref(), Some("5:45"));
+        // 359.7 s rounds up to 360 s: the carry goes into the minute, never `5:60`.
+        assert_eq!(pace_per_km(Some(1000.0 / 359.7)).as_deref(), Some("6:00"));
+        assert_eq!(pace_per_km(Some(0.5)).as_deref(), Some("33:20"));
+    }
+
+    #[test]
+    fn pace_per_km_is_none_without_a_positive_speed() {
+        for speed in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            assert_eq!(pace_per_km(speed), None, "{speed:?}");
+        }
     }
 
     fn sleep_rows() -> Vec<Sleep> {
@@ -702,6 +738,8 @@ mod tests {
                     calories: Some(320),
                     avg_hr: Some(112),
                     max_hr: Some(151),
+                    distance_meters: None,
+                    avg_speed_mps: None,
                     source: "intervals".into(),
                 },
                 vec![
@@ -735,6 +773,8 @@ mod tests {
                     calories: None,
                     avg_hr: None,
                     max_hr: None,
+                    distance_meters: Some(5220.0),
+                    avg_speed_mps: Some(2.9),
                     source: "intervals".into(),
                 },
                 vec![],
@@ -905,10 +945,10 @@ mod tests {
         assert_eq!(
             workout_log_wide(&workout_log()),
             lines(&[
-                "ID   │ Name       │ Start               │ Duration │ Type           │ kcal │ Avg HR │ Max HR │ Source",
-                "─────┼────────────┼─────────────────────┼──────────┼────────────────┼──────┼────────┼────────┼──────────",
-                "i101 │ Upper Body │ 2026-01-02T07:30:00 │   1h 05m │ WeightTraining │  320 │    112 │    151 │ intervals",
-                "i100 │ -          │ 2026-01-01T18:00:00 │      30m │ Run            │    - │      - │      - │ intervals",
+                "ID   │ Name       │ Start               │ Duration │ Type           │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ Source",
+                "─────┼────────────┼─────────────────────┼──────────┼────────────────┼──────┼────────┼────────┼─────────┼──────────┼──────────",
+                "i101 │ Upper Body │ 2026-01-02T07:30:00 │   1h 05m │ WeightTraining │  320 │    112 │    151 │       - │        - │ intervals",
+                "i100 │ -          │ 2026-01-01T18:00:00 │      30m │ Run            │    - │      - │      - │    5.22 │     5:45 │ intervals",
                 "",
                 "Workout │ Set │ Category    │ Exercise            │ Reps │ Weight",
                 "────────┼─────┼─────────────┼─────────────────────┼──────┼───────",
@@ -925,9 +965,9 @@ mod tests {
         assert_eq!(
             workout_log_wide(&log),
             lines(&[
-                "ID   │ Name │ Start               │ Duration │ Type │ kcal │ Avg HR │ Max HR │ Source",
-                "─────┼──────┼─────────────────────┼──────────┼──────┼──────┼────────┼────────┼──────────",
-                "i100 │ -    │ 2026-01-01T18:00:00 │      30m │ Run  │    - │      - │      - │ intervals",
+                "ID   │ Name │ Start               │ Duration │ Type │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ Source",
+                "─────┼──────┼─────────────────────┼──────────┼──────┼──────┼────────┼────────┼─────────┼──────────┼──────────",
+                "i100 │ -    │ 2026-01-01T18:00:00 │      30m │ Run  │    - │      - │      - │    5.22 │     5:45 │ intervals",
             ])
         );
     }
