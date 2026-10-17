@@ -1142,6 +1142,7 @@ name = "pulse-cli"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "pulse-health-core",
  "rpassword",

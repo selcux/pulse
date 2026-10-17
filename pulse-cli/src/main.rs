@@ -1,16 +1,20 @@
 mod output;
+mod range;
 mod table;
 
+use chrono::NaiveDate;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use output::{OutputArgs, OutputFormat, Rows, StoredOutputArgs, VitalityReport, WorkoutLog};
 use pulse_health_core::config;
+use pulse_health_core::date_range::DateRange;
 use pulse_health_core::db::Database;
 use pulse_health_core::db::queries;
 use pulse_health_core::models::{ExerciseSet, Workout};
 use pulse_health_core::sync;
 use pulse_health_core::vitality;
+use range::{RangeArgs, SyncRangeArgs};
 use table::format_duration;
 
 #[derive(Parser)]
@@ -40,58 +44,57 @@ enum Commands {
     Sync {
         /// Provider to sync (omit for all enabled)
         provider: Option<String>,
-        /// Number of days to sync
-        #[arg(short, long, default_value_t = 1)]
-        days: u32,
+        #[command(flatten)]
+        range: SyncRangeArgs,
     },
     /// Refill the data tables from stored provider responses (no network)
     Rebuild,
     /// Show sleep duration, stages, scores, and bed and wake times
     Sleep {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: StoredOutputArgs,
     },
     /// Show resting heart rate, min/max HR, HRV, and VO2 max
     Heart {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: StoredOutputArgs,
     },
     /// Show body battery peak/low values
     Recovery {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: StoredOutputArgs,
     },
     /// Show steps, active minutes, floors, calories, and distance
     Activity {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: StoredOutputArgs,
     },
     /// Show stress levels and time at each stress level
     Stress {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: StoredOutputArgs,
     },
     /// Show workouts and exercise sets
     Workouts {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: StoredOutputArgs,
     },
     /// Show composite vitality score (sleep + recovery + activity + stress)
     Vitality {
-        #[arg(short, long, default_value_t = 7)]
-        days: i32,
+        #[command(flatten)]
+        range: RangeArgs,
         #[command(flatten)]
         output: OutputArgs,
     },
@@ -121,11 +124,38 @@ impl Commands {
             _ => None,
         }
     }
+
+    /// Subcommand name and resolved date range of the eight commands with range flags (`sync` and the
+    /// seven data commands); `None` for the others.
+    fn date_range(&self, today: NaiveDate) -> Option<(&'static str, anyhow::Result<DateRange>)> {
+        match self {
+            Commands::Sync { range, .. } => Some(("sync", range.resolve(today))),
+            Commands::Sleep { range, .. } => Some(("sleep", range.resolve(today))),
+            Commands::Heart { range, .. } => Some(("heart", range.resolve(today))),
+            Commands::Recovery { range, .. } => Some(("recovery", range.resolve(today))),
+            Commands::Activity { range, .. } => Some(("activity", range.resolve(today))),
+            Commands::Stress { range, .. } => Some(("stress", range.resolve(today))),
+            Commands::Workouts { range, .. } => Some(("workouts", range.resolve(today))),
+            Commands::Vitality { range, .. } => Some(("vitality", range.resolve(today))),
+            _ => None,
+        }
+    }
 }
 
-/// Parses the command line, then rejects `--wide` with a `--format` other than `table`, which clap
-/// cannot express (`--json --wide` is rejected by clap itself, through `conflicts_with`).
-fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
+/// Builds the clap error of the subcommand `name`, so the message carries that command's usage line.
+fn subcommand_error(name: &str, kind: ErrorKind, message: impl std::fmt::Display) -> clap::Error {
+    let mut cmd = Cli::command();
+    cmd.build();
+    let sub = cmd
+        .find_subcommand_mut(name)
+        .expect("callers name a subcommand of Cli");
+    sub.error(kind, message)
+}
+
+/// Parses the command line, then runs the checks clap cannot express: `--wide` with a `--format`
+/// other than `table` (`--json --wide` is rejected by clap itself, through `conflicts_with`), and
+/// the date range flags against `today` (`range.rs`).
+fn parse_cli<I, T>(args: I, today: NaiveDate) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
@@ -140,33 +170,47 @@ where
             .to_possible_value()
             .map(|v| v.get_name().to_string())
             .unwrap_or_default();
-        let mut cmd = Cli::command();
-        cmd.build();
-        let sub = cmd
-            .find_subcommand_mut(name)
-            .expect("stored_output names a subcommand");
-        return Err(sub.error(
+        return Err(subcommand_error(
+            name,
             ErrorKind::ArgumentConflict,
             format!("the argument '--wide' cannot be used with '--format {format_name}'"),
         ));
+    }
+    if let Some((name, Err(e))) = cli.command.date_range(today) {
+        return Err(subcommand_error(name, ErrorKind::ValueValidation, e));
     }
     Ok(cli)
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = parse_cli(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    let today = chrono::Local::now().date_naive();
+    let cli = parse_cli(std::env::args_os(), today).unwrap_or_else(|e| e.exit());
 
     match cli.command {
         Commands::GarminLogin { username, mfa } => cmd_garmin_login(username, mfa),
-        Commands::Sync { provider, days } => cmd_sync(provider, days),
+        Commands::Sync { provider, range } => cmd_sync(provider, &range.resolve(today)?),
         Commands::Rebuild => cmd_rebuild(),
-        Commands::Sleep { days, output } => cmd_sleep(days, output.format(), output.wide()),
-        Commands::Heart { days, output } => cmd_heart(days, output.format(), output.wide()),
-        Commands::Recovery { days, output } => cmd_recovery(days, output.format(), output.wide()),
-        Commands::Activity { days, output } => cmd_activity(days, output.format(), output.wide()),
-        Commands::Stress { days, output } => cmd_stress(days, output.format(), output.wide()),
-        Commands::Workouts { days, output } => cmd_workouts(days, output.format(), output.wide()),
-        Commands::Vitality { days, output } => cmd_vitality(days, output.format()),
+        Commands::Sleep { range, output } => {
+            cmd_sleep(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Heart { range, output } => {
+            cmd_heart(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Recovery { range, output } => {
+            cmd_recovery(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Activity { range, output } => {
+            cmd_activity(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Stress { range, output } => {
+            cmd_stress(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Workouts { range, output } => {
+            cmd_workouts(&range.resolve(today)?, output.format(), output.wide())
+        }
+        Commands::Vitality { range, output } => {
+            cmd_vitality(&range.resolve(today)?, output.format())
+        }
         Commands::Config { action } => cmd_config(action),
     }
 }
@@ -175,7 +219,7 @@ fn main() -> anyhow::Result<()> {
 // Commands
 // ---------------------------------------------------------------------------
 
-fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
+fn cmd_sync(provider: Option<String>, range: &DateRange) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
 
@@ -185,7 +229,7 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
     match provider {
         Some(name) => {
             println!("Syncing {}...", name);
-            match sync::sync_provider(&db, &cfg, &name, days) {
+            match sync::sync_provider(&db, &cfg, &name, range) {
                 Ok(report) => {
                     println!("  {} records synced", report.records_synced);
                     for err in &report.errors {
@@ -196,7 +240,7 @@ fn cmd_sync(provider: Option<String>, days: u32) -> anyhow::Result<()> {
             }
         }
         None => {
-            let report = sync::sync_all(&db, &cfg, days)?;
+            let report = sync::sync_all(&db, &cfg, range)?;
             for r in &report.reports {
                 if r.errors.is_empty() {
                     println!(
@@ -253,9 +297,9 @@ fn cmd_rebuild() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_sleep(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+fn cmd_sleep(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
-    let data = queries::query_sleep(&db, days)?;
+    let data = queries::query_sleep(&db, range)?;
 
     if let Some(text) = output::render(
         format,
@@ -269,7 +313,7 @@ fn cmd_sleep(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> 
     }
 
     if data.is_empty() {
-        println!("No sleep data found for the last {} days.", days);
+        println!("No sleep data found from {} to {}.", range.start, range.end);
         return Ok(());
     }
 
@@ -278,9 +322,9 @@ fn cmd_sleep(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn cmd_heart(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+fn cmd_heart(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
-    let data = queries::query_heart(&db, days)?;
+    let data = queries::query_heart(&db, range)?;
 
     if let Some(text) = output::render(
         format,
@@ -294,7 +338,7 @@ fn cmd_heart(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> 
     }
 
     if data.is_empty() {
-        println!("No heart data found for the last {} days.", days);
+        println!("No heart data found from {} to {}.", range.start, range.end);
         return Ok(());
     }
 
@@ -303,9 +347,9 @@ fn cmd_heart(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn cmd_recovery(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+fn cmd_recovery(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
-    let data = queries::query_recovery(&db, days)?;
+    let data = queries::query_recovery(&db, range)?;
 
     if let Some(text) = output::render(
         format,
@@ -319,7 +363,10 @@ fn cmd_recovery(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<(
     }
 
     if data.is_empty() {
-        println!("No recovery data found for the last {} days.", days);
+        println!(
+            "No recovery data found from {} to {}.",
+            range.start, range.end
+        );
         return Ok(());
     }
 
@@ -328,9 +375,9 @@ fn cmd_recovery(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<(
     Ok(())
 }
 
-fn cmd_activity(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+fn cmd_activity(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
-    let data = queries::query_activity(&db, days)?;
+    let data = queries::query_activity(&db, range)?;
 
     if let Some(text) = output::render(
         format,
@@ -344,7 +391,10 @@ fn cmd_activity(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<(
     }
 
     if data.is_empty() {
-        println!("No activity data found for the last {} days.", days);
+        println!(
+            "No activity data found from {} to {}.",
+            range.start, range.end
+        );
         return Ok(());
     }
 
@@ -353,9 +403,9 @@ fn cmd_activity(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<(
     Ok(())
 }
 
-fn cmd_stress(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+fn cmd_stress(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
-    let data = queries::query_stress(&db, days)?;
+    let data = queries::query_stress(&db, range)?;
 
     if let Some(text) = output::render(
         format,
@@ -369,7 +419,10 @@ fn cmd_stress(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()>
     }
 
     if data.is_empty() {
-        println!("No stress data found for the last {} days.", days);
+        println!(
+            "No stress data found from {} to {}.",
+            range.start, range.end
+        );
         return Ok(());
     }
 
@@ -378,9 +431,9 @@ fn cmd_stress(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()>
     Ok(())
 }
 
-fn cmd_workouts(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
+fn cmd_workouts(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::Result<()> {
     let db = Database::open()?;
-    let workouts = queries::query_workouts(&db, days)?;
+    let workouts = queries::query_workouts(&db, range)?;
     let mut entries: Vec<(Workout, Vec<ExerciseSet>)> = Vec::with_capacity(workouts.len());
     for w in workouts {
         let sets = queries::query_exercise_sets(&db, &w.id)?;
@@ -393,7 +446,7 @@ fn cmd_workouts(days: i32, format: OutputFormat, wide: bool) -> anyhow::Result<(
     }
 
     if entries.is_empty() {
-        println!("No workouts found for the last {} days.", days);
+        println!("No workouts found from {} to {}.", range.start, range.end);
         return Ok(());
     }
 
@@ -456,10 +509,10 @@ fn format_exercise_set(s: &ExerciseSet) -> String {
     )
 }
 
-fn cmd_vitality(days: i32, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_vitality(range: &DateRange, format: OutputFormat) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
-    let scores = vitality::calculate_vitality(&db, &cfg, days)?;
+    let scores = vitality::calculate_vitality(&db, &cfg, range)?;
     let pace = vitality::calculate_pace(&scores);
 
     let report = VitalityReport {
@@ -480,8 +533,8 @@ fn cmd_vitality(days: i32, format: OutputFormat) -> anyhow::Result<()> {
 
     if scores.is_empty() {
         println!(
-            "No vitality data for the last {} days. (Sleep data is required as anchor.)",
-            days
+            "No vitality data from {} to {}. (Sleep data is required as anchor.)",
+            range.start, range.end
         );
         return Ok(());
     }
@@ -580,8 +633,36 @@ mod tests {
         "sleep", "heart", "recovery", "activity", "stress", "workouts",
     ];
 
+    const RANGE_COMMANDS: [&str; 8] = [
+        "sync", "sleep", "heart", "recovery", "activity", "stress", "workouts", "vitality",
+    ];
+
+    fn today() -> NaiveDate {
+        date("2026-10-17")
+    }
+
+    fn date(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    fn range(start: &str, end: &str) -> DateRange {
+        DateRange {
+            start: date(start),
+            end: date(end),
+        }
+    }
+
+    fn parse_range(args: &[&str]) -> Result<DateRange, ErrorKind> {
+        let cli = parse_cli(args, today()).map_err(|e| e.kind())?;
+        let (_, range) = cli
+            .command
+            .date_range(today())
+            .expect("not a range command");
+        Ok(range.expect("parse_cli already resolved it"))
+    }
+
     fn parse_format(args: &[&str]) -> Result<OutputFormat, ErrorKind> {
-        let cli = parse_cli(args).map_err(|e| e.kind())?;
+        let cli = parse_cli(args, today()).map_err(|e| e.kind())?;
         match cli.command {
             Commands::Vitality { output, .. } => Ok(output.format()),
             other => Ok(other
@@ -593,7 +674,7 @@ mod tests {
     }
 
     fn parse_wide(args: &[&str]) -> Result<bool, ErrorKind> {
-        let cli = parse_cli(args).map_err(|e| e.kind())?;
+        let cli = parse_cli(args, today()).map_err(|e| e.kind())?;
         Ok(cli
             .command
             .stored_output()
@@ -784,7 +865,7 @@ mod tests {
 
     #[test]
     fn wide_conflict_error_names_the_format_and_the_command() {
-        let Err(e) = parse_cli(["pulse", "heart", "--format", "toon", "--wide"]) else {
+        let Err(e) = parse_cli(["pulse", "heart", "--format", "toon", "--wide"], today()) else {
             panic!("--wide with --format toon must be rejected");
         };
         let message = e.render().to_string();
@@ -804,7 +885,275 @@ mod tests {
             vec!["pulse", "--wide", "sleep"],
         ];
         for args in rejected {
-            let kind = parse_cli(&args).map(|_| ()).map_err(|e| e.kind());
+            let kind = parse_cli(&args, today()).map(|_| ()).map_err(|e| e.kind());
+            assert_eq!(kind, Err(ErrorKind::UnknownArgument), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn range_defaults_to_the_last_week_and_to_one_day_for_sync() {
+        for cmd in DATA_COMMANDS {
+            assert_eq!(
+                parse_range(&["pulse", cmd]),
+                Ok(range("2026-10-10", "2026-10-17")),
+                "{cmd}"
+            );
+        }
+        for args in [&["pulse", "sync"][..], &["pulse", "sync", "garmin"]] {
+            assert_eq!(
+                parse_range(args),
+                Ok(range("2026-10-16", "2026-10-17")),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn days_flag_counts_back_from_today() {
+        for cmd in RANGE_COMMANDS {
+            assert_eq!(
+                parse_range(&["pulse", cmd, "-d", "3"]),
+                Ok(range("2026-10-14", "2026-10-17")),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--days", "0"]),
+                Ok(range("2026-10-17", "2026-10-17")),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--days=-3"]),
+                Err(ErrorKind::ValueValidation),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_and_to_select_that_range() {
+        for cmd in RANGE_COMMANDS {
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--from", "2026-10-01", "--to", "2026-10-07"]),
+                Ok(range("2026-10-01", "2026-10-07")),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--from", "2026-10-01"]),
+                Ok(range("2026-10-01", "2026-10-17")),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--from=2026-10-17", "--to=2026-10-17"]),
+                Ok(range("2026-10-17", "2026-10-17")),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn days_cannot_be_combined_with_from_or_to() {
+        for cmd in RANGE_COMMANDS {
+            let conflicts: [&[&str]; 4] = [
+                &["pulse", cmd, "-d", "3", "--from", "2026-10-01"],
+                &["pulse", cmd, "--from", "2026-10-01", "--days", "3"],
+                &["pulse", cmd, "--days", "3", "--to", "2026-10-07"],
+                &[
+                    "pulse",
+                    cmd,
+                    "--days",
+                    "3",
+                    "--from",
+                    "2026-10-01",
+                    "--to",
+                    "2026-10-07",
+                ],
+            ];
+            for args in conflicts {
+                assert_eq!(
+                    parse_range(args),
+                    Err(ErrorKind::ArgumentConflict),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn to_needs_from() {
+        for cmd in RANGE_COMMANDS {
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--to", "2026-10-07"]),
+                Err(ErrorKind::MissingRequiredArgument),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_dates_are_rejected() {
+        for cmd in ["sleep", "sync"] {
+            let malformed: [&[&str]; 4] = [
+                &["pulse", cmd, "--from", "2026-13-01"],
+                &["pulse", cmd, "--from", "2026-1-5"],
+                &["pulse", cmd, "--from", "+10000-01-01"],
+                &["pulse", cmd, "--from", "2026-10-01", "--to", "yesterday"],
+            ];
+            for args in malformed {
+                assert_eq!(
+                    parse_range(args),
+                    Err(ErrorKind::ValueValidation),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn from_after_to_error_names_both_flags_and_the_command() {
+        let args = [
+            "pulse",
+            "vitality",
+            "--from",
+            "2026-10-08",
+            "--to",
+            "2026-10-01",
+        ];
+        let Err(e) = parse_cli(args, today()) else {
+            panic!("--from after --to must be rejected");
+        };
+        assert_eq!(e.kind(), ErrorKind::ValueValidation);
+        let message = e.render().to_string();
+        assert!(
+            message.contains("--from 2026-10-08 is after --to 2026-10-01"),
+            "{message}"
+        );
+        assert!(message.contains("Usage: pulse vitality"), "{message}");
+    }
+
+    #[test]
+    fn from_after_today_is_rejected() {
+        let Err(e) = parse_cli(["pulse", "sleep", "--from", "2026-10-18"], today()) else {
+            panic!("--from after today must be rejected");
+        };
+        assert_eq!(e.kind(), ErrorKind::ValueValidation);
+        let message = e.render().to_string();
+        assert!(
+            message.contains("--from 2026-10-18 is after today (2026-10-17)"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn read_commands_accept_a_range_after_today() {
+        assert_eq!(
+            parse_range(&[
+                "pulse",
+                "sleep",
+                "--from",
+                "2026-12-01",
+                "--to",
+                "2026-12-31"
+            ]),
+            Ok(range("2026-12-01", "2026-12-31"))
+        );
+    }
+
+    #[test]
+    fn sync_rejects_a_range_that_ends_after_today() {
+        let args = [
+            "pulse",
+            "sync",
+            "garmin",
+            "--from",
+            "2026-10-01",
+            "--to",
+            "2026-10-18",
+        ];
+        let Err(e) = parse_cli(args, today()) else {
+            panic!("sync --to after today must be rejected");
+        };
+        assert_eq!(e.kind(), ErrorKind::ValueValidation);
+        let message = e.render().to_string();
+        assert!(
+            message.contains(
+                "--to 2026-10-18 is after today (2026-10-17); sync cannot fetch future days"
+            ),
+            "{message}"
+        );
+        assert!(message.contains("Usage: pulse sync"), "{message}");
+
+        let args = [
+            "pulse",
+            "sync",
+            "garmin",
+            "--from",
+            "2026-10-01",
+            "--to",
+            "2026-10-17",
+        ];
+        let Ok(cli) = parse_cli(args, today()) else {
+            panic!("sync --to today must be accepted");
+        };
+        let Commands::Sync {
+            provider,
+            range: flags,
+        } = cli.command
+        else {
+            panic!("not a sync command");
+        };
+        assert_eq!(provider.as_deref(), Some("garmin"));
+        assert_eq!(
+            flags.resolve(today()).unwrap(),
+            range("2026-10-01", "2026-10-17")
+        );
+    }
+
+    #[test]
+    fn range_flags_work_with_every_output_flag() {
+        for cmd in STORED_COMMANDS {
+            let toon = ["pulse", cmd, "--from", "2026-10-01", "--to", "2026-10-07"];
+            let toon: Vec<&str> = toon.into_iter().chain(["--format", "toon"]).collect();
+            assert_eq!(parse_format(&toon), Ok(OutputFormat::Toon), "{cmd}");
+            assert_eq!(
+                parse_range(&toon),
+                Ok(range("2026-10-01", "2026-10-07")),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_wide(&["pulse", cmd, "--wide", "--from", "2026-10-01"]),
+                Ok(true),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_format(&["pulse", cmd, "--json", "-d", "3"]),
+                Ok(OutputFormat::Json),
+                "{cmd}"
+            );
+        }
+        assert_eq!(
+            parse_format(&[
+                "pulse",
+                "vitality",
+                "--from",
+                "2026-10-01",
+                "--format",
+                "ison"
+            ]),
+            Ok(OutputFormat::Ison)
+        );
+    }
+
+    #[test]
+    fn range_flags_exist_only_on_data_commands_and_sync() {
+        let rejected = [
+            vec!["pulse", "rebuild", "--from", "2026-10-01"],
+            vec!["pulse", "rebuild", "-d", "3"],
+            vec!["pulse", "config", "--from", "2026-10-01"],
+            vec!["pulse", "garmin-login", "--to", "2026-10-01"],
+            vec!["pulse", "--from", "2026-10-01", "sleep"],
+        ];
+        for args in rejected {
+            let kind = parse_cli(&args, today()).map(|_| ()).map_err(|e| e.kind());
             assert_eq!(kind, Err(ErrorKind::UnknownArgument), "{args:?}");
         }
     }

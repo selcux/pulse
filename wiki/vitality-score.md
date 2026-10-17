@@ -50,7 +50,7 @@ Average of whichever of these are available for the day:
 
 **Baselines** are resolved in priority order:
 1. `rhr_baseline` / `hrv_baseline` from config — explicit personal override
-2. 30-day rolling average computed from synced heart data
+2. Average of the synced heart data over the 30 days up to the last day shown (today, or `--to`)
 3. Hardcoded fallbacks: RHR = 60 bpm, HRV = 50 ms
 
 At baseline, both HRV and RHR contribute 100. A RHR 10% above baseline scores ~90; a RHR 10% below baseline scores 110 (capped at 100).
@@ -100,7 +100,7 @@ Scored against **Shvartz & Reinbold (1990)** population norms using piecewise li
 
 VO2 max source priority:
 1. The estimate Garmin made that day (Garmin estimates VO2 max only after qualifying activities, so most days have none)
-2. Average of the estimates synced in the last 30 days
+2. Average of the estimates synced in the 30 days up to the last day shown (today, or `--to`)
 3. `vo2_max` in config
 
 #### FFMI (Fat-Free Mass Index)
@@ -128,7 +128,7 @@ The `vitality` command also computes a **pace** metric when at least 7 days of s
 
 | Field | Meaning |
 |---|---|
-| `seven_day_avg` | Mean score over the last 7 days |
+| `seven_day_avg` | Mean score over the 7 newest scored days in the window |
 | `thirty_day_avg` | Mean score over the full window requested |
 | `multiplier` | `seven_day_avg / thirty_day_avg` |
 | `vs_baseline` | `seven_day_avg − thirty_day_avg` (signed) |

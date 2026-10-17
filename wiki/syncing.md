@@ -81,6 +81,7 @@ pulse sync intervals
 ```bash
 pulse sync           # syncs all enabled providers
 pulse sync --days 7  # backfill the past 7 days
+pulse sync --from 2026-09-01 --to 2026-09-30  # sync exactly September
 ```
 
 ---
@@ -95,7 +96,7 @@ Only days synced from this version on have a stored body. To cover older days, s
 pulse sync --days 365
 ```
 
-Garmin takes about 5 requests per day, so a year takes roughly 12 to 19 minutes. If Garmin throttles you and some days report errors, run the same command again, or sync in chunks (for example `--days 90`).
+Garmin takes about 5 requests per day, so a year takes roughly 12 to 19 minutes. If Garmin throttles you and some days report errors, run the same command again, or sync in chunks (for example `pulse sync garmin --from 2025-01-01 --to 2025-03-31`).
 
 ---
 

@@ -10,6 +10,7 @@
 //! | Module | Purpose |
 //! |--------|---------|
 //! | [`config`] | Load and write `~/.pulse/config.toml` |
+//! | [`date_range`] | [`DateRange`](date_range::DateRange): the inclusive dates that syncs, queries and vitality take |
 //! | [`db`] | SQLite database, migrations, and queries |
 //! | [`models`] | Plain data structs for each health metric |
 //! | [`providers`] | [`Provider`](providers::Provider) trait + Garmin/Intervals implementations |
@@ -19,16 +20,19 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use pulse_health_core::{config, db::Database, sync, vitality};
+//! use chrono::Local;
+//! use pulse_health_core::{config, date_range::DateRange, db::Database, sync, vitality};
 //!
 //! let cfg = config::load_config().unwrap();
 //! let db = Database::open().unwrap();
-//! sync::sync_all(&db, &cfg, 7).unwrap();
-//! let scores = vitality::calculate_vitality(&db, &cfg, 7).unwrap();
+//! let week = DateRange::days_ending(Local::now().date_naive(), 7);
+//! sync::sync_all(&db, &cfg, &week).unwrap();
+//! let scores = vitality::calculate_vitality(&db, &cfg, &week).unwrap();
 //! println!("Today's vitality: {:.1}", scores[0].total_score);
 //! ```
 
 pub mod config;
+pub mod date_range;
 pub mod db;
 pub mod models;
 pub mod providers;

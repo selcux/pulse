@@ -1,15 +1,21 @@
 //! Database query functions for all health metrics.
 //!
-//! All functions take a [`Database`] reference. Date-range queries use a
-//! `days` parameter: `query_sleep(db, 7)` returns records from the last 7 days
-//! ordered newest-first.
+//! All functions take a [`Database`] reference. Range queries take a [`DateRange`] (both ends
+//! included) and return rows newest-first: `query_sleep(db, &DateRange::days_ending(today, 7))`
+//! returns today and the 7 days before it.
 
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 
 use super::Database;
+use crate::date_range::DateRange;
 use crate::models::{Activity, ExerciseSet, Heart, Recovery, Sleep, Stress, Workout};
+
+/// The first and last date of `range` as the `YYYY-MM-DD` text the date columns hold.
+fn date_params(range: &DateRange) -> (String, String) {
+    (range.start.to_string(), range.end.to_string())
+}
 
 // ---------------------------------------------------------------------------
 // Sleep
@@ -61,13 +67,13 @@ fn sleep_row(row: &rusqlite::Row) -> rusqlite::Result<Sleep> {
     })
 }
 
-/// Return sleep records from the last `days` days, newest-first.
-pub fn query_sleep(db: &Database, days: i32) -> Result<Vec<Sleep>> {
+/// Return sleep records dated within `range` (both ends included), newest-first.
+pub fn query_sleep(db: &Database, range: &DateRange) -> Result<Vec<Sleep>> {
     let mut stmt = db.conn().prepare(&format!(
-        "SELECT {SLEEP_COLUMNS} FROM sleep WHERE date >= date('now', ?1) ORDER BY date DESC"
+        "SELECT {SLEEP_COLUMNS} FROM sleep WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC"
     ))?;
-    let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], sleep_row)?;
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], sleep_row)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -102,14 +108,14 @@ pub fn upsert_heart(db: &Database, h: &Heart) -> Result<()> {
     Ok(())
 }
 
-/// Return heart records from the last `days` days, newest-first.
-pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
+/// Return heart records dated within `range` (both ends included), newest-first.
+pub fn query_heart(db: &Database, range: &DateRange) -> Result<Vec<Heart>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, resting_hr, max_hr, min_hr, hrv_avg, vo2_max, source
-         FROM heart WHERE date >= date('now', ?1) ORDER BY date DESC",
+         FROM heart WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC",
     )?;
-    let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], |row| {
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], |row| {
         Ok(Heart {
             date: row.get(0)?,
             resting_hr: row.get(1)?,
@@ -127,20 +133,21 @@ pub fn query_heart(db: &Database, days: i32) -> Result<Vec<Heart>> {
 // Heart baselines (30-day averages)
 // ---------------------------------------------------------------------------
 
-/// 30-day rolling averages used as personal baselines for recovery scoring.
+/// Averages over a date range, used as personal baselines for recovery scoring.
 pub struct HeartBaselines {
-    /// 30-day average resting heart rate (bpm).
+    /// Average resting heart rate (bpm).
     pub rhr_avg: Option<f64>,
-    /// 30-day average HRV (ms).
+    /// Average HRV (ms).
     pub hrv_avg: Option<f64>,
 }
 
-/// Compute 30-day rolling averages for resting HR and HRV from stored data.
-pub fn compute_heart_baselines(db: &Database) -> Result<HeartBaselines> {
-    let mut stmt = db.conn().prepare(
-        "SELECT AVG(resting_hr), AVG(hrv_avg) FROM heart WHERE date >= date('now', '-30 days')",
-    )?;
-    let result = stmt.query_row([], |row| {
+/// Average resting HR and HRV over `range`; vitality passes the 30 days ending at the last scored day.
+pub fn compute_heart_baselines(db: &Database, range: &DateRange) -> Result<HeartBaselines> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT AVG(resting_hr), AVG(hrv_avg) FROM heart WHERE date BETWEEN ?1 AND ?2")?;
+    let (start, end) = date_params(range);
+    let result = stmt.query_row(params![start, end], |row| {
         Ok(HeartBaselines {
             rhr_avg: row.get(0)?,
             hrv_avg: row.get(1)?,
@@ -149,12 +156,13 @@ pub fn compute_heart_baselines(db: &Database) -> Result<HeartBaselines> {
     Ok(result)
 }
 
-/// Compute the 30-day average VO2 Max from stored heart data, or `None` if unavailable.
-pub fn compute_vo2_baseline(db: &Database) -> Result<Option<f64>> {
+/// Average VO2 max over `range`, or `None` without an estimate in it.
+pub fn compute_vo2_baseline(db: &Database, range: &DateRange) -> Result<Option<f64>> {
     let mut stmt = db.conn().prepare(
-        "SELECT AVG(vo2_max) FROM heart WHERE date >= date('now', '-30 days') AND vo2_max IS NOT NULL",
+        "SELECT AVG(vo2_max) FROM heart WHERE date BETWEEN ?1 AND ?2 AND vo2_max IS NOT NULL",
     )?;
-    let result: Option<f64> = stmt.query_row([], |row| row.get(0))?;
+    let (start, end) = date_params(range);
+    let result: Option<f64> = stmt.query_row(params![start, end], |row| row.get(0))?;
     Ok(result)
 }
 
@@ -179,14 +187,14 @@ pub fn upsert_recovery(db: &Database, r: &Recovery) -> Result<()> {
     Ok(())
 }
 
-/// Return recovery records from the last `days` days, newest-first.
-pub fn query_recovery(db: &Database, days: i32) -> Result<Vec<Recovery>> {
+/// Return recovery records dated within `range` (both ends included), newest-first.
+pub fn query_recovery(db: &Database, range: &DateRange) -> Result<Vec<Recovery>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, body_battery_charged, body_battery_drained, body_battery_peak, body_battery_low, source
-         FROM recovery WHERE date >= date('now', ?1) ORDER BY date DESC",
+         FROM recovery WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC",
     )?;
-    let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], |row| {
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], |row| {
         Ok(Recovery {
             date: row.get(0)?,
             body_battery_charged: row.get(1)?,
@@ -223,14 +231,14 @@ pub fn upsert_activity(db: &Database, a: &Activity) -> Result<()> {
     Ok(())
 }
 
-/// Return activity records from the last `days` days, newest-first.
-pub fn query_activity(db: &Database, days: i32) -> Result<Vec<Activity>> {
+/// Return activity records dated within `range` (both ends included), newest-first.
+pub fn query_activity(db: &Database, range: &DateRange) -> Result<Vec<Activity>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, steps, active_minutes, floors, total_kcal, active_kcal, bmr_kcal, distance_meters, source
-         FROM activity WHERE date >= date('now', ?1) ORDER BY date DESC",
+         FROM activity WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC",
     )?;
-    let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], |row| {
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], |row| {
         Ok(Activity {
             date: row.get(0)?,
             steps: row.get(1)?,
@@ -269,14 +277,14 @@ pub fn upsert_stress(db: &Database, s: &Stress) -> Result<()> {
     Ok(())
 }
 
-/// Return stress records from the last `days` days, newest-first.
-pub fn query_stress(db: &Database, days: i32) -> Result<Vec<Stress>> {
+/// Return stress records dated within `range` (both ends included), newest-first.
+pub fn query_stress(db: &Database, range: &DateRange) -> Result<Vec<Stress>> {
     let mut stmt = db.conn().prepare(
         "SELECT date, avg_stress, max_stress, rest_seconds, low_seconds, medium_seconds, high_seconds, source
-         FROM stress WHERE date >= date('now', ?1) ORDER BY date DESC",
+         FROM stress WHERE date BETWEEN ?1 AND ?2 ORDER BY date DESC",
     )?;
-    let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], |row| {
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], |row| {
         Ok(Stress {
             date: row.get(0)?,
             avg_stress: row.get(1)?,
@@ -315,14 +323,15 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
     Ok(())
 }
 
-/// Return workouts with `start_time` in the last `days` days, newest-first.
-pub fn query_workouts(db: &Database, days: i32) -> Result<Vec<Workout>> {
+/// Return workouts whose start date (the first 10 characters of `start_time`) is within `range`,
+/// newest-first.
+pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, source
-         FROM workouts WHERE start_time >= datetime('now', ?1) ORDER BY start_time DESC",
+         FROM workouts WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2 ORDER BY start_time DESC",
     )?;
-    let modifier = format!("-{days} days");
-    let rows = stmt.query_map(params![modifier], |row| {
+    let (start, end) = date_params(range);
+    let rows = stmt.query_map(params![start, end], |row| {
         Ok(Workout {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -729,11 +738,236 @@ mod tests {
         assert_eq!(val, "2026-03-02");
     }
 
+    fn date(s: &str) -> chrono::NaiveDate {
+        s.parse().unwrap()
+    }
+
+    fn range(start: &str, end: &str) -> DateRange {
+        DateRange {
+            start: date(start),
+            end: date(end),
+        }
+    }
+
+    fn sleep_on(date: &str) -> Sleep {
+        Sleep {
+            date: date.into(),
+            total_seconds: 25000,
+            deep_seconds: 6000,
+            rem_seconds: 5000,
+            light_seconds: 12000,
+            awake_seconds: 2000,
+            sleep_score: None,
+            hrv_ms: None,
+            start_time: None,
+            end_time: None,
+            spo2_avg: None,
+            respiration_avg: None,
+            source: "garmin".into(),
+        }
+    }
+
+    fn heart_on(date: &str) -> Heart {
+        Heart {
+            date: date.into(),
+            resting_hr: None,
+            max_hr: None,
+            min_hr: None,
+            hrv_avg: None,
+            vo2_max: None,
+            source: "garmin".into(),
+        }
+    }
+
+    fn recovery_on(date: &str) -> Recovery {
+        Recovery {
+            date: date.into(),
+            body_battery_charged: None,
+            body_battery_drained: None,
+            body_battery_peak: None,
+            body_battery_low: None,
+            source: "garmin".into(),
+        }
+    }
+
+    fn activity_on(date: &str) -> Activity {
+        Activity {
+            date: date.into(),
+            steps: None,
+            active_minutes: None,
+            floors: None,
+            total_kcal: None,
+            active_kcal: None,
+            bmr_kcal: None,
+            distance_meters: None,
+            source: "garmin".into(),
+        }
+    }
+
+    fn stress_on(date: &str) -> Stress {
+        Stress {
+            date: date.into(),
+            avg_stress: None,
+            max_stress: None,
+            rest_seconds: None,
+            low_seconds: None,
+            medium_seconds: None,
+            high_seconds: None,
+            source: "garmin".into(),
+        }
+    }
+
+    fn workout_at(id: &str, start_time: &str) -> Workout {
+        Workout {
+            id: id.into(),
+            name: None,
+            start_time: start_time.into(),
+            duration_seconds: 3600,
+            activity_type: "strength".into(),
+            calories: None,
+            avg_hr: None,
+            max_hr: None,
+            source: "intervals".into(),
+        }
+    }
+
     #[test]
-    fn query_sleep_with_days_filter() {
+    fn daily_queries_include_both_ends_of_the_range_newest_first() {
+        let db = test_db();
+        let days = [
+            "2026-02-28",
+            "2026-03-01",
+            "2026-03-04",
+            "2026-03-07",
+            "2026-03-08",
+        ];
+        for d in days {
+            upsert_sleep(&db, &sleep_on(d)).unwrap();
+            upsert_heart(&db, &heart_on(d)).unwrap();
+            upsert_recovery(&db, &recovery_on(d)).unwrap();
+            upsert_activity(&db, &activity_on(d)).unwrap();
+            upsert_stress(&db, &stress_on(d)).unwrap();
+        }
+        let march_week = range("2026-03-01", "2026-03-07");
+        let expected = ["2026-03-07", "2026-03-04", "2026-03-01"];
+
+        let got: Vec<String> = query_sleep(&db, &march_week)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.date)
+            .collect();
+        assert_eq!(got, expected, "sleep");
+        let got: Vec<String> = query_heart(&db, &march_week)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.date)
+            .collect();
+        assert_eq!(got, expected, "heart");
+        let got: Vec<String> = query_recovery(&db, &march_week)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.date)
+            .collect();
+        assert_eq!(got, expected, "recovery");
+        let got: Vec<String> = query_activity(&db, &march_week)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.date)
+            .collect();
+        assert_eq!(got, expected, "activity");
+        let got: Vec<String> = query_stress(&db, &march_week)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.date)
+            .collect();
+        assert_eq!(got, expected, "stress");
+    }
+
+    #[test]
+    fn query_workouts_matches_the_start_date_over_the_whole_last_day() {
+        let db = test_db();
+        for (id, start) in [
+            ("w0", "2026-02-28T23:59:59"),
+            ("w1", "2026-03-01T00:00:00"),
+            ("w2", "2026-03-07T23:59:59"),
+            ("w3", "2026-03-08T00:00:00"),
+        ] {
+            upsert_workout(&db, &workout_at(id, start)).unwrap();
+        }
+
+        let got: Vec<String> = query_workouts(&db, &range("2026-03-01", "2026-03-07"))
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(got, ["w2", "w1"]);
+    }
+
+    #[test]
+    fn range_queries_with_start_after_end_return_nothing() {
+        let db = test_db();
+        upsert_sleep(&db, &sleep_on("2026-03-04")).unwrap();
+        assert!(
+            query_sleep(&db, &range("2026-03-07", "2026-03-01"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn heart_baselines_average_only_the_range() {
+        let db = test_db();
+        for (d, rhr, hrv) in [
+            ("2026-02-28", 40, 110.0),
+            ("2026-03-01", 60, 50.0),
+            ("2026-03-31", 62, 54.0),
+            ("2026-04-01", 40, 110.0),
+        ] {
+            upsert_heart(
+                &db,
+                &Heart {
+                    resting_hr: Some(rhr),
+                    hrv_avg: Some(hrv),
+                    ..heart_on(d)
+                },
+            )
+            .unwrap();
+        }
+
+        let baselines = compute_heart_baselines(&db, &range("2026-03-01", "2026-03-31")).unwrap();
+        assert!((baselines.rhr_avg.unwrap() - 61.0).abs() < 0.01);
+        assert!((baselines.hrv_avg.unwrap() - 52.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn vo2_baseline_ignores_estimates_outside_the_range() {
+        let db = test_db();
+        for (d, vo2) in [
+            ("2026-02-28", Some(30.0)),
+            ("2026-03-01", Some(50.0)),
+            ("2026-03-15", None),
+            ("2026-03-31", Some(46.0)),
+            ("2026-04-01", Some(30.0)),
+        ] {
+            upsert_heart(
+                &db,
+                &Heart {
+                    vo2_max: vo2,
+                    ..heart_on(d)
+                },
+            )
+            .unwrap();
+        }
+
+        let baseline = compute_vo2_baseline(&db, &range("2026-03-01", "2026-03-31")).unwrap();
+        assert!((baseline.unwrap() - 48.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn query_sleep_excludes_dates_outside_the_range() {
         let db = test_db();
 
-        // Insert data with a date far in the past — should not appear in a 7-day query.
+        // Insert data with a date far outside the range: it should not appear.
         let old = Sleep {
             date: "2020-01-01".into(),
             total_seconds: 25000,
@@ -751,7 +985,7 @@ mod tests {
         };
         upsert_sleep(&db, &old).unwrap();
 
-        let results = query_sleep(&db, 7).unwrap();
+        let results = query_sleep(&db, &range("2026-03-01", "2026-03-07")).unwrap();
         // The old record should be excluded by the date filter.
         assert!(results.is_empty());
     }
@@ -765,11 +999,10 @@ mod tests {
     #[test]
     fn compute_vo2_baseline_returns_avg() {
         let db = Database::open_memory().unwrap();
-        let today = chrono::Local::now().date_naive().to_string();
         upsert_heart(
             &db,
             &Heart {
-                date: today.clone(),
+                date: "2026-03-01".into(),
                 resting_hr: None,
                 max_hr: None,
                 min_hr: None,
@@ -779,25 +1012,24 @@ mod tests {
             },
         )
         .unwrap();
-        let baseline = compute_vo2_baseline(&db).unwrap();
+        let baseline = compute_vo2_baseline(&db, &range("2026-03-01", "2026-03-01")).unwrap();
         assert!((baseline.unwrap() - 50.0).abs() < 0.01);
     }
 
     #[test]
     fn compute_vo2_baseline_returns_none_when_no_data() {
         let db = Database::open_memory().unwrap();
-        let baseline = compute_vo2_baseline(&db).unwrap();
+        let baseline = compute_vo2_baseline(&db, &range("2026-03-01", "2026-03-31")).unwrap();
         assert!(baseline.is_none());
     }
 
     #[test]
     fn heart_upsert_and_query_with_vo2_max() {
         let db = Database::open_memory().unwrap();
-        let today = chrono::Local::now().date_naive().to_string();
         upsert_heart(
             &db,
             &Heart {
-                date: today.clone(),
+                date: "2026-03-01".into(),
                 resting_hr: Some(58),
                 max_hr: None,
                 min_hr: None,
@@ -807,7 +1039,7 @@ mod tests {
             },
         )
         .unwrap();
-        let results = query_heart(&db, 7).unwrap();
+        let results = query_heart(&db, &range("2026-03-01", "2026-03-01")).unwrap();
         assert_eq!(results.len(), 1);
         assert!((results[0].vo2_max.unwrap() - 48.5).abs() < 0.01);
     }
@@ -815,11 +1047,10 @@ mod tests {
     #[test]
     fn activity_upsert_and_query_round_trips_calories_and_distance() {
         let db = Database::open_memory().unwrap();
-        let today = chrono::Local::now().date_naive().to_string();
         upsert_activity(
             &db,
             &Activity {
-                date: today,
+                date: "2026-03-01".into(),
                 steps: Some(12345),
                 active_minutes: Some(60),
                 floors: Some(10),
@@ -831,7 +1062,7 @@ mod tests {
             },
         )
         .unwrap();
-        let results = query_activity(&db, 7).unwrap();
+        let results = query_activity(&db, &range("2026-03-01", "2026-03-01")).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].total_kcal, Some(2450.0));
         assert_eq!(results[0].active_kcal, Some(612.5));
@@ -842,11 +1073,10 @@ mod tests {
     #[test]
     fn stress_upsert_and_query_round_trips_durations() {
         let db = Database::open_memory().unwrap();
-        let today = chrono::Local::now().date_naive().to_string();
         upsert_stress(
             &db,
             &Stress {
-                date: today,
+                date: "2026-03-01".into(),
                 avg_stress: Some(35),
                 max_stress: Some(78),
                 rest_seconds: Some(28800),
@@ -857,7 +1087,7 @@ mod tests {
             },
         )
         .unwrap();
-        let results = query_stress(&db, 7).unwrap();
+        let results = query_stress(&db, &range("2026-03-01", "2026-03-01")).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].rest_seconds, Some(28800));
         assert_eq!(results[0].low_seconds, Some(18000));

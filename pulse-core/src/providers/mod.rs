@@ -7,10 +7,11 @@ pub mod garmin;
 pub mod intervals;
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Database, queries};
+
+pub use crate::date_range::DateRange;
 
 /// Identifies a category of health metric that a provider can supply.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,15 +28,6 @@ pub enum MetricType {
     Stress,
     /// Workout sessions and exercise sets.
     Workout,
-}
-
-/// An inclusive date range used to scope sync operations.
-#[derive(Debug, Clone)]
-pub struct DateRange {
-    /// First date to sync (inclusive).
-    pub start: NaiveDate,
-    /// Last date to sync (inclusive).
-    pub end: NaiveDate,
 }
 
 /// Summary of a single provider's sync or rebuild run.

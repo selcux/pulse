@@ -9,8 +9,12 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::PulseConfig;
+use crate::date_range::DateRange;
 use crate::db::Database;
 use crate::db::queries;
+
+/// How many days before the end of the scored range the heart and VO2 max baselines average over.
+const BASELINE_DAYS: u32 = 30;
 
 /// Composite vitality score for a single day.
 ///
@@ -79,7 +83,7 @@ pub fn calculate_pace(scores: &[VitalityScore]) -> Option<PaceInfo> {
     })
 }
 
-/// Calculate vitality scores for the last N days.
+/// Calculate vitality scores for each day in `range` that has sleep data, newest first.
 ///
 /// Sleep data acts as the anchor — a score is produced for each date that has
 /// sleep data.  The remaining metrics are looked up by date and blended using
@@ -91,22 +95,27 @@ pub fn calculate_pace(scores: &[VitalityScore]) -> Option<PaceInfo> {
 /// | Recovery  | 25%    |
 /// | Activity  | 25%    |
 /// | Stress    | 20%    |
+///
+/// The RHR, HRV and VO2 max baselines are averages over the 30 days ending at `range.end`, so a
+/// past range is scored against the baselines of its own time.
 pub fn calculate_vitality(
     db: &Database,
     config: &PulseConfig,
-    days: i32,
+    range: &DateRange,
 ) -> Result<Vec<VitalityScore>> {
-    let sleep_data = queries::query_sleep(db, days)?;
-    let heart_data = queries::query_heart(db, days)?;
-    let recovery_data = queries::query_recovery(db, days)?;
-    let activity_data = queries::query_activity(db, days)?;
-    let stress_data = queries::query_stress(db, days)?;
+    let sleep_data = queries::query_sleep(db, range)?;
+    let heart_data = queries::query_heart(db, range)?;
+    let recovery_data = queries::query_recovery(db, range)?;
+    let activity_data = queries::query_activity(db, range)?;
+    let stress_data = queries::query_stress(db, range)?;
 
     let sleep_target = config.user.sleep_target_hours.unwrap_or(8.0);
     let steps_target = config.user.steps_target.unwrap_or(10_000);
 
+    let baseline = DateRange::days_ending(range.end, BASELINE_DAYS);
+
     // Compute 30-day heart baselines from DB, with config overrides and hardcoded fallbacks.
-    let auto_baselines = queries::compute_heart_baselines(db)?;
+    let auto_baselines = queries::compute_heart_baselines(db, &baseline)?;
     let rhr_baseline = config
         .user
         .rhr_baseline
@@ -119,7 +128,7 @@ pub fn calculate_vitality(
         .unwrap_or(50.0);
 
     // VO2 Max baseline: 30-day DB avg (live Garmin data) > config fallback > None (excluded)
-    let vo2_baseline = queries::compute_vo2_baseline(db)?.or(config.user.vo2_max);
+    let vo2_baseline = queries::compute_vo2_baseline(db, &baseline)?.or(config.user.vo2_max);
 
     // Build scores for each date that has sleep data (sleep is the anchor).
     let mut scores = Vec::new();
@@ -659,7 +668,7 @@ mod tests {
         )
         .unwrap();
 
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
         assert_eq!(scores.len(), 1);
 
         // With auto-baselines rhr=58, hrv=55 and today's values equal to those:
@@ -668,6 +677,95 @@ mod tests {
             (scores[0].recovery_score - 100.0).abs() < 0.01,
             "Expected 100.0 (at baseline), got {}",
             scores[0].recovery_score
+        );
+    }
+
+    /// Today and the 7 days before it, which is what `--days 7` selects.
+    fn last_week() -> DateRange {
+        DateRange::days_ending(chrono::Local::now().date_naive(), 7)
+    }
+
+    fn date(s: &str) -> chrono::NaiveDate {
+        s.parse().unwrap()
+    }
+
+    /// Insert a heart row for `date` with the given values.
+    fn insert_heart_day(
+        db: &crate::db::Database,
+        date: &str,
+        resting_hr: Option<i32>,
+        hrv_avg: Option<f64>,
+        vo2_max: Option<f64>,
+    ) {
+        queries::upsert_heart(
+            db,
+            &Heart {
+                date: date.into(),
+                resting_hr,
+                max_hr: None,
+                min_hr: None,
+                hrv_avg,
+                vo2_max,
+                source: "garmin".into(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn vitality_scores_only_the_days_in_the_range() {
+        let db = crate::db::Database::open_memory().unwrap();
+        for day in 1..=10 {
+            insert_sleep_day(&db, &format!("2026-03-{day:02}"));
+        }
+        let range = DateRange {
+            start: date("2026-03-03"),
+            end: date("2026-03-05"),
+        };
+
+        let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
+        let dates: Vec<&str> = scores.iter().map(|s| s.date.as_str()).collect();
+        assert_eq!(dates, ["2026-03-05", "2026-03-04", "2026-03-03"]);
+    }
+
+    #[test]
+    fn baselines_are_the_30_days_ending_at_the_range_end() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let day = date("2026-03-31");
+        insert_sleep_day(&db, "2026-03-31");
+        // Inside the baseline window (03-01..=03-31), and the scored day itself.
+        insert_heart_day(&db, "2026-03-01", Some(60), Some(50.0), None);
+        insert_heart_day(&db, "2026-03-31", Some(60), Some(50.0), None);
+        // Outside it: a leak would pull the baselines away from 60 bpm / 50 ms.
+        insert_heart_day(&db, "2026-02-28", Some(40), Some(110.0), None);
+        insert_heart_day(&db, "2026-04-01", Some(40), Some(110.0), None);
+
+        let range = DateRange::days_ending(day, 0);
+        let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
+        assert_eq!(scores.len(), 1);
+        assert!(
+            (scores[0].recovery_score - 100.0).abs() < 0.01,
+            "Expected 100.0 (at baseline), got {}",
+            scores[0].recovery_score
+        );
+    }
+
+    #[test]
+    fn vo2_fallback_uses_the_30_days_ending_at_the_range_end() {
+        let db = crate::db::Database::open_memory().unwrap();
+        insert_sleep_day(&db, "2026-03-31");
+        insert_heart_day(&db, "2026-03-01", None, None, Some(50.0));
+        insert_heart_day(&db, "2026-02-28", None, None, Some(30.0));
+        insert_heart_day(&db, "2026-03-31", None, None, None);
+
+        let range = DateRange::days_ending(date("2026-03-31"), 0);
+        let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
+        assert_eq!(scores.len(), 1);
+        let actual = scores[0].fitness_score.expect("fitness score present");
+        let expected = vo2_population_score(50.0);
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
         );
     }
 
@@ -723,7 +821,7 @@ mod tests {
             .unwrap();
         }
 
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
         assert_eq!(scores.len(), 3);
 
         // Own estimate on days that have one; the mean (48.0) on the day without.
@@ -749,7 +847,7 @@ mod tests {
         let today = chrono::Local::now().date_naive().to_string();
         insert_sleep_day(&db, &today);
 
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
 
         assert_eq!(scores.len(), 1);
         let actual = scores[0].fitness_score.expect("fitness score present");
@@ -803,7 +901,7 @@ mod tests {
         )
         .unwrap();
 
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
         // Config baselines used: rhr=50, hrv=70
         // HRV: 56/70*100 = 80, RHR: (2-55/50)*100 = (2-1.1)*100 = 90 -> avg = 85
         assert!(
@@ -856,7 +954,7 @@ mod tests {
 
         // Auto-baselines from the 1 day of data: rhr=60, hrv=50 (same as hardcoded fallbacks).
         // At baseline: HRV=100, RHR=100 -> avg=100
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
         assert!(
             (scores[0].recovery_score - 100.0).abs() < 0.01,
             "Expected 100.0, got {}",
@@ -873,8 +971,7 @@ mod tests {
         let db = crate::db::Database::open_memory().unwrap();
         let config = test_config();
 
-        // Use today's date so the query_* functions (which filter by date('now', ...))
-        // will include our test data.
+        // Use today's date so the data falls inside `last_week()`, the range passed below.
         let today = chrono::Local::now().date_naive().to_string();
 
         // Insert test data for today
@@ -956,7 +1053,7 @@ mod tests {
         )
         .unwrap();
 
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
         assert_eq!(scores.len(), 1);
 
         let s = &scores[0];
@@ -1005,7 +1102,7 @@ mod tests {
     fn calculate_vitality_no_data_returns_empty() {
         let db = crate::db::Database::open_memory().unwrap();
         let config = test_config();
-        let scores = calculate_vitality(&db, &config, 7).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
         assert!(scores.is_empty());
     }
 

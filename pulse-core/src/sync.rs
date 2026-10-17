@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use chrono::Local;
 
 use crate::config::PulseConfig;
+use crate::date_range::DateRange;
 use crate::db::Database;
 use crate::providers::garmin::{self, GarminProvider};
 use crate::providers::intervals::{self, IntervalsProvider};
-use crate::providers::{DateRange, Provider, SyncReport};
+use crate::providers::{Provider, SyncReport};
 
 /// Result of syncing all providers.
 pub struct FullSyncReport {
@@ -14,9 +14,8 @@ pub struct FullSyncReport {
     pub total_errors: usize,
 }
 
-/// Sync all enabled providers for the given number of days.
-pub fn sync_all(db: &Database, config: &PulseConfig, days: u32) -> Result<FullSyncReport> {
-    let range = date_range(days);
+/// Sync all enabled providers for the dates in `range`.
+pub fn sync_all(db: &Database, config: &PulseConfig, range: &DateRange) -> Result<FullSyncReport> {
     let providers = build_providers(config);
 
     let mut reports = Vec::new();
@@ -24,7 +23,7 @@ pub fn sync_all(db: &Database, config: &PulseConfig, days: u32) -> Result<FullSy
     let mut total_errors = 0;
 
     for provider in &providers {
-        match provider.sync(db, &range) {
+        match provider.sync(db, range) {
             Ok(report) => {
                 total_synced += report.records_synced;
                 total_errors += report.errors.len();
@@ -48,14 +47,13 @@ pub fn sync_all(db: &Database, config: &PulseConfig, days: u32) -> Result<FullSy
     })
 }
 
-/// Sync a specific provider by name.
+/// Sync a specific provider by name, for the dates in `range`.
 pub fn sync_provider(
     db: &Database,
     config: &PulseConfig,
     provider_name: &str,
-    days: u32,
+    range: &DateRange,
 ) -> Result<SyncReport> {
-    let range = date_range(days);
     let providers = build_providers(config);
 
     let provider = providers
@@ -63,7 +61,7 @@ pub fn sync_provider(
         .find(|p| p.name() == provider_name)
         .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", provider_name))?;
 
-    provider.sync(db, &range)
+    provider.sync(db, range)
 }
 
 /// Refill the mapped tables from the provider responses stored in `raw_responses`, without network access.
@@ -89,12 +87,6 @@ pub fn rebuild_all(db: &Database) -> Result<FullSyncReport> {
         total_synced,
         total_errors,
     })
-}
-
-fn date_range(days: u32) -> DateRange {
-    let end = Local::now().date_naive();
-    let start = end - chrono::Duration::days(days as i64);
-    DateRange { start, end }
 }
 
 fn build_providers(config: &PulseConfig) -> Vec<Box<dyn Provider>> {
@@ -194,18 +186,11 @@ mod tests {
     }
 
     #[test]
-    fn date_range_produces_correct_span() {
-        let range = date_range(7);
-        let diff = range.end - range.start;
-        assert_eq!(diff.num_days(), 7);
-        assert_eq!(range.end, Local::now().date_naive());
-    }
-
-    #[test]
     fn sync_all_with_no_providers_returns_empty_report() {
         let db = crate::db::Database::open_memory().unwrap();
         let config = test_config(false, None);
-        let report = sync_all(&db, &config, 7).unwrap();
+        let range = DateRange::days_ending("2026-03-01".parse().unwrap(), 7);
+        let report = sync_all(&db, &config, &range).unwrap();
         assert!(report.reports.is_empty());
         assert_eq!(report.total_synced, 0);
         assert_eq!(report.total_errors, 0);
@@ -243,8 +228,8 @@ mod tests {
     #[test]
     fn rebuild_all_fills_vo2_max_for_the_baseline_and_vitality() {
         let db = crate::db::Database::open_memory().unwrap();
-        // query_* and the baselines filter on date('now'), so use today.
-        let today = Local::now().date_naive().to_string();
+        let day: chrono::NaiveDate = "2026-03-01".parse().unwrap();
+        let today = day.to_string();
         let maxmet = format!(
             r#"[{{"userId":1,"generic":{{"calendarDate":"{today}","vo2MaxPreciseValue":47.6,"vo2MaxValue":48.0}},"cycling":null}}]"#
         );
@@ -255,10 +240,16 @@ mod tests {
         let report = rebuild_all(&db).unwrap();
 
         assert_eq!(report.total_errors, 0);
-        let baseline = queries::compute_vo2_baseline(&db).unwrap().unwrap();
+        let baseline = queries::compute_vo2_baseline(&db, &DateRange::days_ending(day, 30))
+            .unwrap()
+            .unwrap();
         assert!((baseline - 47.6).abs() < 1e-9);
-        let scores =
-            crate::vitality::calculate_vitality(&db, &test_config(false, None), 7).unwrap();
+        let scores = crate::vitality::calculate_vitality(
+            &db,
+            &test_config(false, None),
+            &DateRange::days_ending(day, 7),
+        )
+        .unwrap();
         assert_eq!(scores.len(), 1);
         // vo2_population_score(47.6) = 71.4 + 0.6 / 5 * 14.3 = 73.116
         assert!((scores[0].fitness_score.unwrap() - 73.116).abs() < 0.01);
@@ -283,7 +274,8 @@ mod tests {
     fn sync_provider_unknown_name_errors() {
         let db = crate::db::Database::open_memory().unwrap();
         let config = test_config(false, None);
-        let result = sync_provider(&db, &config, "nonexistent", 7);
+        let range = DateRange::days_ending("2026-03-01".parse().unwrap(), 7);
+        let result = sync_provider(&db, &config, "nonexistent", &range);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown provider"));
     }

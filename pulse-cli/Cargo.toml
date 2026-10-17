@@ -13,6 +13,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 pulse-health-core = { path = "../pulse-core", version = "0.7.0" }
 clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
 anyhow = "1"
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }

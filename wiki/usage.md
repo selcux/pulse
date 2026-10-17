@@ -6,19 +6,20 @@
 |---|---|---|
 | `pulse config [init]` | — | Show current config, or `init` to create defaults |
 | `pulse garmin-login` | `-u EMAIL`, `--mfa CODE` | Authenticate with Garmin Connect |
-| `pulse sync [provider]` | `--days N` | Sync from all providers, or a specific one (`garmin`, `intervals`) |
+| `pulse sync [provider]` | `--days N`, `--from DATE`, `--to DATE` | Sync from all providers, or a specific one (`garmin`, `intervals`) |
 | `pulse rebuild` | — | Refill the data tables from stored provider responses, without network access |
-| `pulse vitality` | `--days N`, `--format FMT`, `--json` | Daily vitality score table |
-| `pulse sleep` | `--days N`, `--format FMT`, `--json`, `--wide` | Sleep stages, score, HRV, bed and wake time |
-| `pulse heart` | `--days N`, `--format FMT`, `--json`, `--wide` | Heart rate, HRV and VO2 max |
-| `pulse recovery` | `--days N`, `--format FMT`, `--json`, `--wide` | HRV and recovery scores |
-| `pulse activity` | `--days N`, `--format FMT`, `--json`, `--wide` | Steps, activity, calories and distance |
-| `pulse stress` | `--days N`, `--format FMT`, `--json`, `--wide` | Stress scores and time at each stress level |
-| `pulse workouts` | `--days N`, `--format FMT`, `--json`, `--wide` | Workout log |
+| `pulse vitality` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json` | Daily vitality score table |
+| `pulse sleep` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Sleep stages, score, HRV, bed and wake time |
+| `pulse heart` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Heart rate, HRV and VO2 max |
+| `pulse recovery` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | HRV and recovery scores |
+| `pulse activity` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Steps, activity, calories and distance |
+| `pulse stress` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Stress scores and time at each stress level |
+| `pulse workouts` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Workout log |
 
 ### Common flags
 
-- `--days N` — number of past days to show (default: 7)
+- `--days N` — today and the N days before it (default: 7; `sync`: 1)
+- `--from DATE`, `--to DATE` — a fixed range instead, as `YYYY-MM-DD`, both days included. `--to` defaults to today and needs `--from`; neither can be combined with `--days`. `sync` refuses a `--to` after today.
 - `--format <table|json|toon|ison>` — how to print the result (default: `table`)
 - `--json` — shorthand for `--format json`; cannot be combined with `--format`
 - `--wide` — `sleep`, `heart`, `recovery`, `activity`, `stress` and `workouts` only: the table shows every stored column, in the order of the JSON fields. For the table format only; it cannot be combined with `--json` or with a `--format` other than `table`. `workouts --wide` prints a table of workouts and a table of their exercise sets instead of the workout log.
@@ -83,6 +84,12 @@ Fitness scoring uses **Shvartz & Reinbold** population norms for VO2 max percent
 ## Examples
 
 ```bash
+# September's vitality, scored against September's baselines
+pulse vitality --from 2026-09-01 --to 2026-09-30
+
+# Sleep since 1 October
+pulse sleep --from 2026-10-01
+
 # Last 30 days of vitality scores as JSON
 pulse vitality --days 30 --json
 
