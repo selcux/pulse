@@ -17,6 +17,11 @@ const CURRENT_VERSION: i32 = 7;
 /// Safe to call on an already-migrated database — already-applied migrations
 /// are skipped. Called automatically by
 /// [`Database::open`](crate::db::Database::open).
+///
+/// # Errors
+///
+/// Fails without writing the version when the stored schema version is above
+/// `CURRENT_VERSION`, i.e. a newer pulse has already migrated the database.
 pub fn run(db: &Database) -> Result<()> {
     let conn = db.conn();
 
@@ -31,6 +36,15 @@ pub fn run(db: &Database) -> Result<()> {
     .context("Failed to create sync_state table")?;
 
     let version = current_version(db)?;
+
+    // A newer pulse migrated this database. Going on would stamp it back down to
+    // `CURRENT_VERSION` and let syncs blank the columns this build does not know (issue #21).
+    if version > CURRENT_VERSION {
+        anyhow::bail!(
+            "the database is at schema version {version}, but this pulse only supports up to \
+             version {CURRENT_VERSION}. Upgrade pulse (cargo install pulse-cli) to open it."
+        );
+    }
 
     if version < 1 {
         migrate_v1(db)?;
@@ -444,6 +458,34 @@ mod tests {
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
         assert_eq!(CURRENT_VERSION, 7);
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+    }
+
+    #[test]
+    fn refuses_a_database_from_a_newer_pulse() {
+        let db = Database::open_memory().unwrap();
+        let newer = CURRENT_VERSION + 1;
+        set_version(&db, newer).unwrap();
+
+        let message = run(&db).unwrap_err().to_string();
+
+        assert!(message.contains(&format!("version {newer}")), "{message}");
+        assert!(
+            message.contains(&format!("version {CURRENT_VERSION}")),
+            "{message}"
+        );
+        assert!(message.contains("Upgrade pulse"), "{message}");
+        assert_eq!(
+            current_version(&db).unwrap(),
+            newer,
+            "the stored version must not be lowered"
+        );
+    }
+
+    #[test]
+    fn opens_a_database_at_the_current_version_again() {
+        let db = Database::open_memory().unwrap();
+        run(&db).unwrap();
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 

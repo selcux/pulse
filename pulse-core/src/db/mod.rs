@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 pub mod migrations;
@@ -39,7 +39,7 @@ impl Database {
         let conn = Connection::open(&path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let db = Self { conn };
-        migrations::run(&db)?;
+        migrations::run(&db).with_context(|| format!("Failed to open {}", path.display()))?;
         Ok(db)
     }
 
@@ -60,5 +60,39 @@ impl Database {
     /// Prefer the typed functions in [`queries`] over using this directly.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_at_refuses_a_database_from_a_newer_pulse() {
+        let dir = std::env::temp_dir().join(format!("pulse-newer-db-{}", std::process::id()));
+        let path = dir.join("pulse.db");
+        drop(Database::open_at(path.clone()).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE sync_state SET value = '999' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+
+        let message = format!("{:#}", Database::open_at(path.clone()).err().unwrap());
+
+        let stored: String = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM sync_state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains("version 999"), "{message}");
+        assert_eq!(stored, "999");
     }
 }
