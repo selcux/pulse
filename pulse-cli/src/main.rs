@@ -1045,11 +1045,11 @@ mod tests {
     }
 
     #[test]
-    fn range_defaults_to_the_last_week_and_to_one_day_for_sync() {
+    fn range_defaults_to_seven_dates_and_to_today_and_yesterday_for_sync() {
         for cmd in DATA_COMMANDS {
             assert_eq!(
                 parse_range(&["pulse", cmd]),
-                Ok(range("2026-10-10", "2026-10-17")),
+                Ok(range("2026-10-11", "2026-10-17")),
                 "{cmd}"
             );
         }
@@ -1063,16 +1063,21 @@ mod tests {
     }
 
     #[test]
-    fn days_flag_counts_back_from_today() {
+    fn days_flag_selects_that_many_dates_ending_today() {
         for cmd in RANGE_COMMANDS {
             assert_eq!(
                 parse_range(&["pulse", cmd, "-d", "3"]),
-                Ok(range("2026-10-14", "2026-10-17")),
+                Ok(range("2026-10-15", "2026-10-17")),
                 "{cmd}"
             );
             assert_eq!(
-                parse_range(&["pulse", cmd, "--days", "0"]),
+                parse_range(&["pulse", cmd, "--days", "1"]),
                 Ok(range("2026-10-17", "2026-10-17")),
+                "{cmd}"
+            );
+            assert_eq!(
+                parse_range(&["pulse", cmd, "--days", "7"]),
+                Ok(range("2026-10-11", "2026-10-17")),
                 "{cmd}"
             );
             assert_eq!(
@@ -1080,6 +1085,18 @@ mod tests {
                 Err(ErrorKind::ValueValidation),
                 "{cmd}"
             );
+        }
+    }
+
+    #[test]
+    fn days_zero_is_rejected_with_a_clear_message() {
+        for cmd in RANGE_COMMANDS {
+            let Err(e) = parse_cli(["pulse", cmd, "--days", "0"], today()) else {
+                panic!("{cmd} --days 0 must be rejected");
+            };
+            assert_eq!(e.kind(), ErrorKind::ValueValidation, "{cmd}");
+            let message = e.render().to_string();
+            assert!(message.contains("must be at least 1"), "{cmd}: {message}");
         }
     }
 

@@ -16,6 +16,15 @@ use crate::db::queries;
 /// How many days before the end of the scored range the heart and VO2 max baselines average over.
 const BASELINE_DAYS: u32 = 30;
 
+/// The dates the baselines average over: `end` and the [`BASELINE_DAYS`] days before it.
+///
+/// That is 31 dates, not 30. The 31-day span is known and deliberate for now, pending a separate
+/// decision; `--days N` meaning "N dates" (issue #22) does not apply to it, which is why this calls
+/// [`DateRange::days_ending`] and not [`DateRange::last_days`].
+fn baseline_range(end: chrono::NaiveDate) -> DateRange {
+    DateRange::days_ending(end, BASELINE_DAYS)
+}
+
 /// Composite vitality score for a single day.
 ///
 /// `total_score` is a weighted blend of the component scores.
@@ -112,7 +121,7 @@ pub fn calculate_vitality(
     let sleep_target = config.user.sleep_target_hours.unwrap_or(8.0);
     let steps_target = config.user.steps_target.unwrap_or(10_000);
 
-    let baseline = DateRange::days_ending(range.end, BASELINE_DAYS);
+    let baseline = baseline_range(range.end);
 
     // Compute 30-day heart baselines from DB, with config overrides and hardcoded fallbacks.
     let auto_baselines = queries::compute_heart_baselines(db, &baseline)?;
@@ -680,9 +689,12 @@ mod tests {
         );
     }
 
-    /// Today and the 7 days before it, which is what `--days 7` selects.
+    /// The 7 dates ending today, which is what `--days 7` selects.
     fn last_week() -> DateRange {
-        DateRange::days_ending(chrono::Local::now().date_naive(), 7)
+        DateRange::last_days(
+            chrono::Local::now().date_naive(),
+            std::num::NonZeroU32::new(7).unwrap(),
+        )
     }
 
     fn date(s: &str) -> chrono::NaiveDate {
@@ -726,6 +738,14 @@ mod tests {
         let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
         let dates: Vec<&str> = scores.iter().map(|s| s.date.as_str()).collect();
         assert_eq!(dates, ["2026-03-05", "2026-03-04", "2026-03-03"]);
+    }
+
+    #[test]
+    fn baseline_span_is_the_range_end_and_the_30_days_before_it() {
+        let baseline = baseline_range(date("2026-03-31"));
+        assert_eq!(baseline.start, date("2026-03-01"));
+        assert_eq!(baseline.end, date("2026-03-31"));
+        assert_eq!((baseline.end - baseline.start).num_days() + 1, 31);
     }
 
     #[test]

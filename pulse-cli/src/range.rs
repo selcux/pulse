@@ -1,14 +1,25 @@
 //! Date range flags: --days, --from and --to on the read commands and on sync.
 
+use std::num::NonZeroU32;
+
 use chrono::NaiveDate;
 use pulse_health_core::date_range::DateRange;
+
+/// Default `--days` of the read commands: one week.
+const READ_DEFAULT_DAYS: NonZeroU32 = NonZeroU32::new(7).unwrap();
+/// Default `--days` of `sync`: today and yesterday, because Garmin finalises last night's sleep
+/// after waking.
+const SYNC_DEFAULT_DAYS: NonZeroU32 = NonZeroU32::new(2).unwrap();
 
 /// `--days`, `--from` and `--to` of the read commands (`sleep` ... `workouts`, `vitality`).
 #[derive(Debug, Clone, Copy, clap::Args)]
 pub struct RangeArgs {
-    /// Show today and the N days before it
-    #[arg(short, long, value_name = "N", default_value_t = 7, conflicts_with_all = ["from", "to"])]
-    days: u32,
+    /// Show the last N days, today included
+    #[arg(
+        short, long, value_name = "N", default_value_t = READ_DEFAULT_DAYS,
+        value_parser = parse_days, conflicts_with_all = ["from", "to"]
+    )]
+    days: NonZeroU32,
     /// First day to show, YYYY-MM-DD
     #[arg(long, value_name = "DATE", value_parser = parse_iso_date)]
     from: Option<NaiveDate>,
@@ -17,12 +28,15 @@ pub struct RangeArgs {
     to: Option<NaiveDate>,
 }
 
-/// The same flags on `sync`: `--days` defaults to 1, and the range cannot end after today.
+/// The same flags on `sync`: `--days` defaults to 2, and the range cannot end after today.
 #[derive(Debug, Clone, Copy, clap::Args)]
 pub struct SyncRangeArgs {
-    /// Sync today and the N days before it
-    #[arg(short, long, value_name = "N", default_value_t = 1, conflicts_with_all = ["from", "to"])]
-    days: u32,
+    /// Sync the last N days, today included
+    #[arg(
+        short, long, value_name = "N", default_value_t = SYNC_DEFAULT_DAYS,
+        value_parser = parse_days, conflicts_with_all = ["from", "to"]
+    )]
+    days: NonZeroU32,
     /// First day to sync, YYYY-MM-DD
     #[arg(long, value_name = "DATE", value_parser = parse_iso_date)]
     from: Option<NaiveDate>,
@@ -45,17 +59,17 @@ impl SyncRangeArgs {
     }
 }
 
-/// Shared by both `resolve`s. Without `from` the range is `days` back from `today` (clap guarantees
-/// `to` is `None` then); with it, `from ..= to`, and `to` defaults to `today`.
+/// Shared by both `resolve`s. Without `from` the range is the last `days` dates ending `today` (clap
+/// guarantees `to` is `None` then); with it, `from ..= to`, and `to` defaults to `today`.
 fn resolve(
-    days: u32,
+    days: NonZeroU32,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     today: NaiveDate,
     allow_future: bool,
 ) -> anyhow::Result<DateRange> {
     let Some(start) = from else {
-        return Ok(DateRange::days_ending(today, days));
+        return Ok(DateRange::last_days(today, days));
     };
     if !allow_future
         && let Some(to) = to
@@ -71,6 +85,14 @@ fn resolve(
         }
     }
     Ok(DateRange { start, end })
+}
+
+/// Clap value parser for `--days`: a whole number of at least 1.
+fn parse_days(s: &str) -> Result<NonZeroU32, String> {
+    let days: u32 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a whole number of days"))?;
+    NonZeroU32::new(days).ok_or_else(|| "must be at least 1".to_string())
 }
 
 /// Clap value parser for `--from` and `--to`: exactly `YYYY-MM-DD`.
@@ -108,7 +130,7 @@ mod tests {
 
     fn read(days: u32, from: Option<&str>, to: Option<&str>) -> RangeArgs {
         RangeArgs {
-            days,
+            days: NonZeroU32::new(days).unwrap(),
             from: from.map(date),
             to: to.map(date),
         }
@@ -116,26 +138,44 @@ mod tests {
 
     fn sync(days: u32, from: Option<&str>, to: Option<&str>) -> SyncRangeArgs {
         SyncRangeArgs {
-            days,
+            days: NonZeroU32::new(days).unwrap(),
             from: from.map(date),
             to: to.map(date),
         }
     }
 
     #[test]
-    fn days_count_back_from_today() {
+    fn days_are_that_many_dates_ending_today() {
         assert_eq!(
             read(7, None, None).resolve(today()).unwrap(),
-            range("2026-10-10", "2026-10-17")
+            range("2026-10-11", "2026-10-17")
         );
         assert_eq!(
-            read(0, None, None).resolve(today()).unwrap(),
+            read(1, None, None).resolve(today()).unwrap(),
             range("2026-10-17", "2026-10-17")
         );
         assert_eq!(
             sync(1, None, None).resolve(today()).unwrap(),
+            range("2026-10-17", "2026-10-17")
+        );
+        assert_eq!(
+            sync(2, None, None).resolve(today()).unwrap(),
             range("2026-10-16", "2026-10-17")
         );
+    }
+
+    #[test]
+    fn days_must_be_a_whole_number_of_at_least_one() {
+        assert_eq!(parse_days("1"), Ok(NonZeroU32::new(1).unwrap()));
+        assert_eq!(parse_days("30"), Ok(NonZeroU32::new(30).unwrap()));
+        assert_eq!(parse_days("0"), Err("must be at least 1".to_string()));
+        for s in ["-1", "1.5", "", "seven"] {
+            let err = parse_days(s).expect_err(s);
+            assert!(
+                err.ends_with("is not a whole number of days"),
+                "{s:?}: {err}"
+            );
+        }
     }
 
     #[test]

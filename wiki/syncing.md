@@ -121,8 +121,8 @@ Intervals.icu recalculates fitness and fatigue when you add, edit or delete an a
 ## Syncing Both Providers
 
 ```bash
-pulse sync           # syncs all enabled providers
-pulse sync --days 7  # backfill the past 7 days
+pulse sync           # syncs all enabled providers, today and yesterday
+pulse sync --days 7  # backfill the last 7 days, today included
 pulse sync --from 2026-09-01 --to 2026-09-30  # sync exactly September
 ```
 
@@ -147,7 +147,7 @@ Garmin takes about 5 requests per day, so a year takes roughly 12 to 19 minutes.
 ### Linux / macOS — cron
 
 ```cron
-# Run daily at 09:30, backfilling 2 days to catch late Garmin uploads
+# Run daily at 09:30, syncing today and yesterday to catch late Garmin uploads (the default)
 30 9 * * * /home/user/.cargo/bin/pulse sync --days 2
 ```
 
@@ -159,4 +159,6 @@ $trigger = New-ScheduledTaskTrigger -Daily -At "09:30"
 Register-ScheduledTask -TaskName "PulseSync" -Action $action -Trigger $trigger
 ```
 
-The `--days 2` overlap ensures that any data that arrived late (e.g., last night's sleep) is captured without re-syncing the full history.
+The `--days 2` overlap ensures that any data that arrived late (e.g., last night's sleep) is captured without re-syncing the full history. It is also what plain `pulse sync` does.
+
+> **Changed in 0.12.0:** `--days N` now covers exactly N dates, today included, and `pulse sync` defaults to `--days 2`. Before, `--days N` covered N+1 dates and `pulse sync` defaulted to `--days 1`, which was the same two dates. A script that passed `--days 1` to get today and yesterday needs `--days 2` now. `--days 0` is no longer accepted.

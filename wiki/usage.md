@@ -19,11 +19,13 @@
 
 ### Common flags
 
-- `--days N` — today and the N days before it (default: 7; `sync`: 1)
+- `--days N` — the last N days, today included, so `--days 1` is today only (at least 1; default: 7; `sync`: 2, today and yesterday)
 - `--from DATE`, `--to DATE` — a fixed range instead, as `YYYY-MM-DD`, both days included. `--to` defaults to today and needs `--from`; neither can be combined with `--days`. `sync` refuses a `--to` after today.
 - `--format <table|json|toon|ison>` — how to print the result (default: `table`)
 - `--json` — shorthand for `--format json`; cannot be combined with `--format`
 - `--wide` — `sleep`, `heart`, `recovery`, `activity`, `stress`, `workouts` and `wellness` only: the table shows every stored column, in the order of the JSON fields. For the table format only; it cannot be combined with `--json` or with a `--format` other than `table`. `workouts --wide` prints a table of workouts and a table of their exercise sets instead of the workout log.
+
+> **Changed in 0.12.0:** `--days N` now returns exactly N dates. Before, it returned today and the N days before it, N+1 dates, so `--days 7` showed 8 days. Scripts that used `--days 1` for today and yesterday should use `--days 2`. The `sync` default moved from 1 to 2 to keep fetching today and yesterday. `--days 0` is no longer accepted; use `--days 1` for today only.
 
 ## Output formats
 

@@ -20,12 +20,14 @@
 //! # Quick start
 //!
 //! ```no_run
+//! use std::num::NonZeroU32;
+//!
 //! use chrono::Local;
 //! use pulse_health_core::{config, date_range::DateRange, db::Database, sync, vitality};
 //!
 //! let cfg = config::load_config().unwrap();
 //! let db = Database::open().unwrap();
-//! let week = DateRange::days_ending(Local::now().date_naive(), 7);
+//! let week = DateRange::last_days(Local::now().date_naive(), NonZeroU32::new(7).unwrap());
 //! sync::sync_all(&db, &cfg, &week).unwrap();
 //! let scores = vitality::calculate_vitality(&db, &cfg, &week).unwrap();
 //! println!("Today's vitality: {:.1}", scores[0].total_score);

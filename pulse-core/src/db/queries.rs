@@ -1,8 +1,8 @@
 //! Database query functions for all health metrics.
 //!
 //! All functions take a [`Database`] reference. Range queries take a [`DateRange`] (both ends
-//! included) and return rows newest-first: `query_sleep(db, &DateRange::days_ending(today, 7))`
-//! returns today and the 7 days before it.
+//! included) and return rows newest-first: `query_sleep(db, &range)` with a range from
+//! [`DateRange::last_days`] of 7 returns the 7 dates ending today.
 
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
