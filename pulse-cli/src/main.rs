@@ -84,7 +84,7 @@ enum Commands {
         #[command(flatten)]
         output: StoredOutputArgs,
     },
-    /// Show workouts with distance, pace, heart rate zones and exercise sets
+    /// Show workouts with distance, pace, heart rate zones, training load and exercise sets
     Workouts {
         #[command(flatten)]
         range: RangeArgs,
@@ -472,8 +472,8 @@ fn cmd_workouts(range: &DateRange, format: OutputFormat, wide: bool) -> anyhow::
     Ok(())
 }
 
-/// The workout log line: `[start] label (duration[, distance][, pace], kcal, HR)`. Distance and
-/// pace are left out when absent, so a strength workout reads as before.
+/// The workout log line: `[start] label (duration[, distance][, pace], kcal, HR[, load])`.
+/// Distance, pace and load are left out when absent, so a strength workout reads as before.
 fn format_workout_line(w: &Workout) -> String {
     let mut parts = vec![format_duration(w.duration_seconds)];
     if let Some(meters) = w.distance_meters {
@@ -490,6 +490,9 @@ fn format_workout_line(w: &Workout) -> String {
         Some(h) => format!("avg HR {}", h),
         None => "no HR".into(),
     });
+    if let Some(load) = w.training_load {
+        parts.push(format!("load {load}"));
+    }
     let label = match &w.name {
         Some(n) => format!("{} \u{2014} {}", n, w.activity_type),
         None => w.activity_type.clone(),
@@ -754,6 +757,7 @@ mod tests {
             distance_meters: distance,
             avg_speed_mps: speed,
             hr_zone_seconds: None,
+            training_load: None,
             source: "intervals".into(),
         }
     }
@@ -789,6 +793,18 @@ mod tests {
         assert_eq!(
             format_workout_line(&workout(Some(5043.21), Some(1.417))),
             "[2026-10-15T07:00:00] Walk (59m, 5.04 km, 11:46 /km, 287cal, avg HR 104)"
+        );
+    }
+
+    #[test]
+    fn workout_line_ends_with_the_training_load() {
+        let w = Workout {
+            training_load: Some(43),
+            ..workout(Some(5043.21), Some(1.417))
+        };
+        assert_eq!(
+            format_workout_line(&w),
+            "[2026-10-15T07:00:00] Walk (59m, 5.04 km, 11:46 /km, 287cal, avg HR 104, load 43)"
         );
     }
 

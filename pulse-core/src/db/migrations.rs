@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 9;
+const CURRENT_VERSION: i32 = 10;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -82,6 +82,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v9(db)?;
     }
 
+    if version < 10 {
+        migrate_v10(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -105,6 +109,40 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Columns added by v10, as `(table, column, SQL type)`.
+const V10_COLUMNS: [(&str, &str, &str); 1] = [("workouts", "training_load", "INTEGER")];
+
+/// Fills `workouts.training_load` from stored Intervals.icu activity bodies. Must store exactly
+/// what `IntervalsProvider::map_workout` stores for the same body: a JSON number truncated toward
+/// zero, kept from 1 to i32::MAX, otherwise NULL. The CAST matters: INTEGER affinity would keep a
+/// fractional value as REAL, which `query_workouts` cannot read. Only rows with a stored body are
+/// written; no row is inserted. `migration_v10_backfill_matches_the_rust_mapping` pins that.
+const V10_BACKFILL: &str = "
+    UPDATE workouts SET
+        training_load = CASE WHEN json_type(r.body, '$.icu_training_load') IN ('integer', 'real')
+                              AND CAST(json_extract(r.body, '$.icu_training_load') AS INTEGER)
+                                  BETWEEN 1 AND 2147483647
+                             THEN CAST(json_extract(r.body, '$.icu_training_load') AS INTEGER) END
+    FROM raw_responses AS r
+    WHERE r.provider = 'intervals' AND r.endpoint = 'activity' AND r.key = workouts.id;
+";
+
+/// Adds `workouts.training_load` (issue #7) and fills it for every workout whose Intervals.icu
+/// body is stored in `raw_responses`. Workouts without one (synced before 0.5.0, or with raw
+/// storage off) stay NULL until synced again.
+///
+/// One transaction, safe to run again for the same reason as `migrate_v7`.
+pub(crate) fn migrate_v10(db: &Database) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    for (table, column, decl) in V10_COLUMNS {
+        add_column_if_missing(&tx, table, column, decl)?;
+    }
+    tx.execute_batch(V10_BACKFILL)
+        .context("Failed to run v10 migration")?;
+    tx.commit().context("Failed to commit v10 migration")?;
     Ok(())
 }
 
@@ -542,7 +580,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 9);
+        assert_eq!(CURRENT_VERSION, 10);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -1274,5 +1312,146 @@ mod tests {
         migrate_v9(&db).unwrap();
         migrate_v9(&db).unwrap();
         assert_v9_backfilled(&db);
+    }
+
+    /// A database as pulse 0.10 left it: schema version 9, workouts without `training_load`, and
+    /// stored Intervals.icu activity bodies with a load for some of them.
+    fn v9_db_with_load_bodies() -> Database {
+        let db = v8_db_with_zone_bodies();
+        migrate_v9(&db).unwrap();
+        set_version(&db, 9).unwrap();
+        db.conn()
+            .execute_batch(
+                r#"INSERT INTO workouts (id, start_time, duration_seconds, activity_type) VALUES
+                 ('i221', '2026-10-18T07:00:00', 3540, 'Walk'),
+                 ('i222', '2026-10-18T18:00:00', 3600, 'WeightTraining'),
+                 ('i223', '2026-10-19T07:00:00', 1800, 'Run'),
+                 ('i224', '2026-10-19T09:00:00', 1200, 'Walk'),
+                 ('i225', '2026-10-19T10:00:00', 600, 'Walk'),
+                 ('i226', '2026-10-19T11:00:00', 600, 'Walk'),
+                 ('i228', '2026-10-19T12:00:00', 600, 'Walk');
+                 INSERT INTO raw_responses (provider, endpoint, key, body) VALUES
+                 ('intervals', 'activity', 'i221', '{"id":"i221","type":"Walk","icu_training_load":43,"hr_load":43}'),
+                 ('intervals', 'activity', 'i222', '{"id":"i222","type":"WeightTraining","icu_training_load":0}'),
+                 ('intervals', 'activity', 'i223', '{"id":"i223","type":"Run","icu_training_load":57.9}'),
+                 ('intervals', 'activity', 'i224', '{"id":"i224","type":"Walk","icu_training_load":null}'),
+                 ('intervals', 'activity', 'i225', '{"id":"i225","type":"Walk","icu_training_load":"43"}'),
+                 ('intervals', 'activity', 'i228', '{"id":"i228","type":"Walk","icu_training_load":3000000000}'),
+                 ('intervals', 'activity', 'i227', '{"id":"i227","type":"Walk","icu_training_load":12}'),
+                 ('garmin', 'activity', 'i226', '{"icu_training_load":99}');"#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// The stored `training_load` of one workout, read as `i64` so a broken bound fails an
+    /// assertion instead of a conversion.
+    fn load_of(db: &Database, id: &str) -> Option<i64> {
+        db.conn()
+            .query_row(
+                "SELECT training_load FROM workouts WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn v10_adds_the_training_load_column() {
+        let db = v9_db_with_load_bodies();
+        migrate_v10(&db).unwrap();
+
+        assert_eq!(
+            columns_of(&db, "workouts"),
+            pairs(&[
+                ("id", "TEXT"),
+                ("start_time", "TEXT"),
+                ("duration_seconds", "INTEGER"),
+                ("activity_type", "TEXT"),
+                ("calories", "INTEGER"),
+                ("avg_hr", "INTEGER"),
+                ("max_hr", "INTEGER"),
+                ("source", "TEXT"),
+                ("name", "TEXT"),
+                ("distance_meters", "REAL"),
+                ("avg_speed_mps", "REAL"),
+                ("hr_zone_seconds", "TEXT"),
+                ("training_load", "INTEGER"),
+            ])
+        );
+    }
+
+    /// Asserts the values the fixture's bodies produce, and that the other rows stayed empty.
+    fn assert_v10_backfilled(db: &Database) {
+        assert_eq!(load_of(db, "i221"), Some(43), "a stored integer is copied");
+        assert_eq!(load_of(db, "i223"), Some(57), "a fraction is truncated");
+        assert_eq!(load_of(db, "i222"), None, "zero becomes NULL");
+        assert_eq!(load_of(db, "i224"), None, "null gives NULL");
+        assert_eq!(load_of(db, "i225"), None, "a string gives NULL");
+        assert_eq!(load_of(db, "i228"), None, "beyond i32 gives NULL");
+        assert_eq!(
+            load_of(db, "i226"),
+            None,
+            "the decoy under another provider was not used"
+        );
+        assert_eq!(load_of(db, "i201"), None, "a body without the field");
+        assert_eq!(load_of(db, "w1"), None);
+
+        // No row was inserted for the body that has no workout.
+        assert_eq!(count(db, "workouts"), 18);
+
+        let not_integer: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM workouts WHERE typeof(training_load) NOT IN ('integer', 'null')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(not_integer, 0, "every stored load is an integer");
+
+        // The old columns are untouched.
+        assert_eq!(
+            workout_extras(db, "i201"),
+            (Some(5043.21), Some(1.417)),
+            "the v8 columns keep their values"
+        );
+        assert_eq!(
+            zone_text(db, "i211").as_deref(),
+            Some("[491,158,150,110,28,0,0]"),
+            "the v9 column keeps its value"
+        );
+        assert_eq!(set_rows(db), empty_labels_converted());
+    }
+
+    #[test]
+    fn v10_fills_workouts_that_have_a_stored_body() {
+        let db = v9_db_with_load_bodies();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        assert_v10_backfilled(&db);
+    }
+
+    #[test]
+    fn v10_runs_with_no_stored_bodies() {
+        let db = v9_db_with_load_bodies();
+        db.conn().execute("DELETE FROM raw_responses", []).unwrap();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        let filled: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(training_load) FROM workouts", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(filled, 0);
+    }
+
+    #[test]
+    fn v10_can_run_twice() {
+        let db = v9_db_with_load_bodies();
+        migrate_v10(&db).unwrap();
+        migrate_v10(&db).unwrap();
+        assert_v10_backfilled(&db);
     }
 }

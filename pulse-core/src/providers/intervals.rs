@@ -22,7 +22,6 @@ const BASE_URL: &str = "https://intervals.icu/api/v1";
 /// Represents a single activity from the Intervals.icu activities list endpoint.
 /// GET /api/v1/athlete/{id}/activities?oldest=...&newest=...
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ApiActivity {
     id: String,
     name: Option<String>,
@@ -31,6 +30,8 @@ struct ApiActivity {
     moving_time: Option<i64>,
     #[serde(rename = "type")]
     activity_type: Option<String>,
+    /// Intervals.icu's training load. The API documents an integer; read as `f64` so a fraction
+    /// cannot fail the whole activity. `training_load` decides what counts.
     icu_training_load: Option<f64>,
     calories: Option<f64>,
     average_heartrate: Option<f64>,
@@ -174,6 +175,16 @@ fn hr_zone_seconds(times: Option<&serde_json::Value>) -> Option<Vec<i64>> {
     seconds.iter().any(|s| *s > 0).then_some(seconds)
 }
 
+/// Training load from the body's `icu_training_load` in whole points: truncated toward zero and
+/// kept only from 1 to `i32::MAX`. Missing, null, below 1 (0 means no load computed) or beyond
+/// `i32::MAX` is `None`. The v10 migration repeats this rule in SQL;
+/// `migration_v10_backfill_matches_the_rust_mapping` pins the two together.
+fn training_load(load: Option<f64>) -> Option<i32> {
+    load.map(f64::trunc)
+        .filter(|l| (1.0..=f64::from(i32::MAX)).contains(l))
+        .map(|l| l as i32)
+}
+
 /// Map a Garmin exercise-sets body, fresh or stored, to our sets for `workout_id`.
 fn sets_from_body(workout_id: &str, body: &str) -> Result<Vec<ExerciseSet>> {
     let resp: GarminExerciseSetsResponse = parse_body(GarminEndpoint::ExerciseSets, body)?;
@@ -299,6 +310,7 @@ impl IntervalsProvider {
             distance_meters: api.distance.filter(|d| *d > 0.0),
             avg_speed_mps: api.average_speed.filter(|s| *s > 0.0),
             hr_zone_seconds: hr_zone_seconds(api.icu_hr_zone_times.as_ref()),
+            training_load: training_load(api.icu_training_load),
             source: "intervals".into(),
         }
     }
@@ -498,6 +510,7 @@ mod tests {
         assert_eq!(w.distance_meters, None);
         assert_eq!(w.avg_speed_mps, None);
         assert_eq!(w.hr_zone_seconds, None);
+        assert_eq!(w.training_load, Some(45), "45.2 is truncated");
         assert_eq!(w.source, "intervals");
     }
 
@@ -711,7 +724,7 @@ mod tests {
     }
 
     const ACTIVITIES_BODY: &str = r#"[
-  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"external_id":"22005844470","icu_hr_zone_times":[1500,1200,600,300,0],"icu_ftp":1.50},
+  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"icu_training_load":52,"external_id":"22005844470","icu_hr_zone_times":[1500,1200,600,300,0],"icu_ftp":1.50},
   {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "icu_hr_zone_times": [0, 0, 0], "average_speed": 2.9, "distance": 5012.5}
 ]"#;
     const SETS_BODY: &str = r#"{"exerciseSets":[{"exercises":[{"category":"BENCH_PRESS","name":"BARBELL_BENCH_PRESS"}],"repetitionCount":10,"weight":60000.0,"setType":"ACTIVE"},{"exercises":[],"setType":"REST"}]}"#;
@@ -838,7 +851,98 @@ mod tests {
         };
         assert_eq!(zones("i101").as_deref(), Some("[1500,1200,600,300,0]"));
         assert_eq!(zones("i102"), None, "all zeros are no zone time");
+        let load = |id: &str| -> Option<i32> {
+            db.conn()
+                .query_row(
+                    "SELECT training_load FROM workouts WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(load("i101"), Some(52));
+        assert_eq!(load("i102"), None);
         assert_eq!(queries::query_exercise_sets(&db, "i101").unwrap().len(), 1);
+    }
+
+    /// The v10 migration repeats `training_load`'s rule in SQL. Both must store the same value
+    /// for the same stored body, malformed ones included.
+    #[test]
+    fn migration_v10_backfill_matches_the_rust_mapping() {
+        let bodies = [
+            ("i501", r#""icu_training_load":43"#),
+            ("i502", r#""icu_training_load":0"#),
+            ("i503", r#""icu_training_load":57.9"#),
+            ("i504", ""),
+            ("i505", r#""icu_training_load":null"#),
+            ("i506", r#""icu_training_load":-5"#),
+            ("i507", r#""icu_training_load":0.9"#),
+            ("i508", r#""icu_training_load":3000000000"#),
+            ("i509", r#""icu_training_load":2147483647.5"#),
+            ("i510", r#""icu_training_load":9223372036854775808"#),
+            ("i511", r#""icu_training_load":1.0"#),
+        ];
+        let db = Database::open_memory().unwrap();
+        let mut mapped = Vec::new();
+        for (id, field) in bodies {
+            let separator = if field.is_empty() { "" } else { "," };
+            let body = format!(
+                r#"{{"id":"{id}","start_date_local":"2026-10-15T07:00:00","type":"Walk"{separator}{field}}}"#
+            );
+            let w = IntervalsProvider::map_workout(&parse_activity(&body).unwrap());
+            queries::upsert_raw_response(&db, PROVIDER, ACTIVITY_ENDPOINT, &w.id, &body).unwrap();
+            // A stale value the migration must overwrite either way.
+            let before = Workout {
+                training_load: Some(999),
+                ..w.clone()
+            };
+            queries::upsert_workout(&db, &before).unwrap();
+            mapped.push(w);
+        }
+
+        crate::db::migrations::migrate_v10(&db).unwrap();
+
+        for w in &mapped {
+            let stored: Option<i64> = db
+                .conn()
+                .query_row(
+                    "SELECT training_load FROM workouts WHERE id = ?1",
+                    [&w.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, w.training_load.map(i64::from), "{}", w.id);
+        }
+        // Not vacuous: only these bodies map to a value.
+        for w in &mapped {
+            let expected = match w.id.as_str() {
+                "i501" => Some(43),
+                "i503" => Some(57),
+                "i509" => Some(i32::MAX),
+                "i511" => Some(1),
+                _ => None,
+            };
+            assert_eq!(w.training_load, expected, "{}", w.id);
+        }
+    }
+
+    #[test]
+    fn training_load_keeps_whole_points_from_one_to_i32_max() {
+        assert_eq!(training_load(Some(43.0)), Some(43));
+        assert_eq!(training_load(Some(57.9)), Some(57));
+        assert_eq!(training_load(Some(1.0)), Some(1));
+        assert_eq!(training_load(Some(2147483647.5)), Some(i32::MAX));
+        for value in [
+            None,
+            Some(0.0),
+            Some(0.9),
+            Some(-5.0),
+            Some(2147483648.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            assert_eq!(training_load(value), None, "{value:?}");
+        }
     }
 
     /// The v9 migration repeats `hr_zone_seconds`'s rule in SQL. Both must store the same text

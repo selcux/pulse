@@ -323,8 +323,8 @@ fn zones_from_text(text: Option<String>) -> Option<Vec<i64>> {
 pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
     let zones = zones_to_text(w.hr_zone_seconds.as_deref())?;
     db.conn().execute(
-        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, training_load, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             w.id,
             w.name.as_deref(),
@@ -337,6 +337,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
             w.distance_meters,
             w.avg_speed_mps,
             zones,
+            w.training_load,
             w.source,
         ],
     )?;
@@ -347,7 +348,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
 /// newest-first.
 pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, source
+        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, training_load, source
          FROM workouts WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2 ORDER BY start_time DESC",
     )?;
     let (start, end) = date_params(range);
@@ -364,7 +365,8 @@ pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> 
             distance_meters: row.get(8)?,
             avg_speed_mps: row.get(9)?,
             hr_zone_seconds: zones_from_text(row.get(10)?),
-            source: row.get(11)?,
+            training_load: row.get(11)?,
+            source: row.get(12)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -669,6 +671,7 @@ mod tests {
             distance_meters: None,
             avg_speed_mps: None,
             hr_zone_seconds: None,
+            training_load: None,
             source: "intervals".into(),
         };
         upsert_workout(&db, &workout).unwrap();
@@ -725,6 +728,7 @@ mod tests {
             distance_meters: None,
             avg_speed_mps: None,
             hr_zone_seconds: None,
+            training_load: None,
             source: "intervals".into(),
         };
         upsert_workout(&db, &workout).unwrap();
@@ -859,6 +863,7 @@ mod tests {
             distance_meters: None,
             avg_speed_mps: None,
             hr_zone_seconds: None,
+            training_load: None,
             source: "intervals".into(),
         }
     }
@@ -922,6 +927,25 @@ mod tests {
 
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].hr_zone_seconds, None);
+    }
+
+    #[test]
+    fn workout_round_trips_training_load() {
+        let db = test_db();
+        let walk = Workout {
+            training_load: Some(43),
+            ..workout_at("w-walk", "2026-10-15T07:00:00")
+        };
+        upsert_workout(&db, &walk).unwrap();
+        upsert_workout(&db, &workout_at("w-lift", "2026-10-14T18:00:00")).unwrap();
+
+        let got = query_workouts(&db, &range("2026-10-14", "2026-10-15")).unwrap();
+
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].id, "w-walk");
+        assert_eq!(got[0].training_load, Some(43));
+        assert_eq!(got[1].id, "w-lift");
+        assert_eq!(got[1].training_load, None);
     }
 
     #[test]

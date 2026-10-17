@@ -14,7 +14,7 @@
 | `pulse recovery` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | HRV and recovery scores |
 | `pulse activity` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Steps, activity, calories and distance |
 | `pulse stress` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Stress scores and time at each stress level |
-| `pulse workouts` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Workout log with distance, pace and heart rate zones |
+| `pulse workouts` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Workout log with distance, pace, heart rate zones and training load |
 
 ### Common flags
 
@@ -44,6 +44,7 @@ sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds
 - `workouts` prints a `workouts` table, then `exercise_sets` with one table of sets per workout, keyed by the workout id. The database row id of a set is left out. `exercise_sets: null` means no workout has sets. Its JSON nests the sets inside each workout instead.
 - `workouts` carries `distance_meters` (meters) and `avg_speed_mps` (meters per second) as stored, in JSON too; only the terminal table converts them to km and pace per km. Both are `null` for a workout without distance, such as strength training.
 - `workouts` carries `hr_zone_seconds`, the seconds spent in each heart rate zone, lowest zone first, as Intervals.icu counted them. JSON has it as an array on each workout. TOON and ISON print it as its own `hr_zone_seconds` table with one row per workout that has zone times: `workout_id`, then `z1` (lowest) to `zN`, with `null` for a zone that workout's zone setup did not have. `hr_zone_seconds: null` means no workout has zone times. A workout without heart rate time has `null` in JSON and no row in TOON and ISON. The terminal log prints `HR zones: Z1 8m · Z2 2m …` under the workout, leaving out zones with no time, and `<1m` means under a minute.
+- `workouts` carries `training_load`, the workout's training load as Intervals.icu computed it, in whole points, in JSON, TOON and ISON alike; `null` when Intervals.icu computed none. The terminal log line ends with `load 43`, and `--wide` has a `Load` column.
 - A set whose exercise Garmin did not identify has `null` for `exercise_name`, for `exercise_category`, or for both, in JSON, TOON and ISON. The key and the column are always present. The terminal table prints the name, else the category in parentheses, else `-`. A category in parentheses is the group Garmin filed the exercise under, which can be broader than the exercise itself: Upright Row is filed under `(Shrug)`. Releases up to 0.2.0 stored and printed `Unknown` for a missing value. 0.3.0 printed `-` even when the category was known.
 - `vitality` prints a `pace` block (`pace: null` until seven days are scored) followed by a `scores` table. Numbers are rounded as in the terminal table: two decimals for the pace multiplier, one for everything else. JSON keeps full precision.
 - No data prints as empty tables (`sleep: []`).

@@ -356,6 +356,7 @@ pub const WORKOUT_COLUMNS: &[Column<Workout>] = &[
                 .as_deref(),
         )
     }),
+    Column::right("training_load", "Load", 4, |w| opt_i32(w.training_load)),
     Column::left("source", "Source", 6, |w| w.source.clone()),
 ];
 
@@ -793,6 +794,7 @@ mod tests {
                     distance_meters: None,
                     avg_speed_mps: None,
                     hr_zone_seconds: Some(vec![2400, 900, 450, 150, 0, 0, 0]),
+                    training_load: Some(48),
                     source: "intervals".into(),
                 },
                 vec![
@@ -829,6 +831,7 @@ mod tests {
                     distance_meters: Some(5220.0),
                     avg_speed_mps: Some(2.9),
                     hr_zone_seconds: None,
+                    training_load: None,
                     source: "intervals".into(),
                 },
                 vec![],
@@ -999,10 +1002,10 @@ mod tests {
         assert_eq!(
             workout_log_wide(&workout_log()),
             lines(&[
-                "ID   │ Name       │ Start               │ Duration │ Type           │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones                        │ Source",
-                "─────┼────────────┼─────────────────────┼──────────┼────────────────┼──────┼────────┼────────┼─────────┼──────────┼─────────────────────────────────┼──────────",
-                "i101 │ Upper Body │ 2026-01-02T07:30:00 │   1h 05m │ WeightTraining │  320 │    112 │    151 │       - │        - │ Z1 40m · Z2 15m · Z3 7m · Z4 2m │ intervals",
-                "i100 │ -          │ 2026-01-01T18:00:00 │      30m │ Run            │    - │      - │      - │    5.22 │     5:45 │ -                               │ intervals",
+                "ID   │ Name       │ Start               │ Duration │ Type           │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones                        │ Load │ Source",
+                "─────┼────────────┼─────────────────────┼──────────┼────────────────┼──────┼────────┼────────┼─────────┼──────────┼─────────────────────────────────┼──────┼──────────",
+                "i101 │ Upper Body │ 2026-01-02T07:30:00 │   1h 05m │ WeightTraining │  320 │    112 │    151 │       - │        - │ Z1 40m · Z2 15m · Z3 7m · Z4 2m │   48 │ intervals",
+                "i100 │ -          │ 2026-01-01T18:00:00 │      30m │ Run            │    - │      - │      - │    5.22 │     5:45 │ -                               │    - │ intervals",
                 "",
                 "Workout │ Set │ Category    │ Exercise            │ Reps │ Weight",
                 "────────┼─────┼─────────────┼─────────────────────┼──────┼───────",
@@ -1019,9 +1022,9 @@ mod tests {
         assert_eq!(
             workout_log_wide(&log),
             lines(&[
-                "ID   │ Name │ Start               │ Duration │ Type │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones │ Source",
-                "─────┼──────┼─────────────────────┼──────────┼──────┼──────┼────────┼────────┼─────────┼──────────┼──────────┼──────────",
-                "i100 │ -    │ 2026-01-01T18:00:00 │      30m │ Run  │    - │      - │      - │    5.22 │     5:45 │ -        │ intervals",
+                "ID   │ Name │ Start               │ Duration │ Type │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones │ Load │ Source",
+                "─────┼──────┼─────────────────────┼──────────┼──────┼──────┼────────┼────────┼─────────┼──────────┼──────────┼──────┼──────────",
+                "i100 │ -    │ 2026-01-01T18:00:00 │      30m │ Run  │    - │      - │      - │    5.22 │     5:45 │ -        │    - │ intervals",
             ])
         );
     }

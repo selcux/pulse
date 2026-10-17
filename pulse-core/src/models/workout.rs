@@ -33,6 +33,10 @@ pub struct Workout {
     /// differ from `duration_seconds` by a minute or two. `None` when the provider recorded no zone
     /// time: no heart rate, or every zone at 0.
     pub hr_zone_seconds: Option<Vec<i64>>,
+    /// Training load of the workout in the provider's whole load points. For Intervals.icu this is
+    /// its own load score, computed from power, heart rate or pace, whichever it uses for the
+    /// activity. `None` when the provider computed no load.
+    pub training_load: Option<i32>,
     /// Provider that supplied this record (e.g. `"intervals"`, `"garmin"`).
     pub source: String,
 }

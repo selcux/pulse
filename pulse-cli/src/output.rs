@@ -350,6 +350,7 @@ mod tests {
                     distance_meters: None,
                     avg_speed_mps: None,
                     hr_zone_seconds: Some(vec![1500, 1200, 600, 300, 0]),
+                    training_load: Some(52),
                     source: "intervals".into(),
                 },
                 vec![
@@ -386,6 +387,7 @@ mod tests {
                     distance_meters: Some(5220.0),
                     avg_speed_mps: Some(2.9),
                     hr_zone_seconds: None,
+                    training_load: Some(38),
                     source: "intervals".into(),
                 },
                 vec![],
@@ -403,6 +405,7 @@ mod tests {
                     distance_meters: None,
                     avg_speed_mps: None,
                     hr_zone_seconds: Some(vec![900, 1200, 300, 0, 0, 0, 0]),
+                    training_load: None,
                     source: "intervals".into(),
                 },
                 vec![ExerciseSet {
@@ -442,6 +445,7 @@ mod tests {
                 distance_meters: None,
                 avg_speed_mps: None,
                 hr_zone_seconds: None,
+                training_load: None,
                 source: "intervals".into(),
             },
             vec![
@@ -557,7 +561,8 @@ mod tests {
     "max_hr": 152,
     "name": "Push day, heavy",
     "source": "intervals",
-    "start_time": "2026-01-02T07:30:00"
+    "start_time": "2026-01-02T07:30:00",
+    "training_load": 52
   },
   {
     "activity_type": "Run",
@@ -572,7 +577,8 @@ mod tests {
     "max_hr": null,
     "name": null,
     "source": "intervals",
-    "start_time": "2026-01-01T18:05:00"
+    "start_time": "2026-01-01T18:05:00",
+    "training_load": 38
   },
   {
     "activity_type": "WeightTraining",
@@ -605,7 +611,8 @@ mod tests {
     "max_hr": 140,
     "name": "Legs: \"5x5\" - deload",
     "source": "intervals",
-    "start_time": "2026-01-01T06:00:00"
+    "start_time": "2026-01-01T06:00:00",
+    "training_load": null
   }
 ]"#;
 
@@ -695,10 +702,10 @@ mod tests {
   2026-01-02,27000,6300,5400,14400,900,82,48,"2026-01-01 23:10:00","2026-01-02 06:55:00",95,14.5,garmin
   2026-01-01,25200,5400,4800,14100,900,null,51.5,null,null,null,null,garmin"#;
 
-    const WORKOUTS_TOON: &str = r#"workouts[3]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,source}:
-  i101,"Push day, heavy","2026-01-02T07:30:00",3600,WeightTraining,410,118,152,null,null,intervals
-  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,intervals
-  i103,"Legs: \"5x5\" - deload","2026-01-01T06:00:00",2400,WeightTraining,300,110,140,null,null,intervals
+    const WORKOUTS_TOON: &str = r#"workouts[3]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
+  i101,"Push day, heavy","2026-01-02T07:30:00",3600,WeightTraining,410,118,152,null,null,52,intervals
+  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,38,intervals
+  i103,"Legs: \"5x5\" - deload","2026-01-01T06:00:00",2400,WeightTraining,300,110,140,null,null,null,intervals
 hr_zone_seconds[2]{workout_id,z1,z2,z3,z4,z5,z6,z7}:
   i101,1500,1200,600,300,0,null,null
   i103,900,1200,300,0,0,0,0
@@ -709,20 +716,20 @@ exercise_sets:
   i103[1]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
     1,legs,squat,5,102.5"#;
 
-    const WORKOUTS_NO_SETS_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,source}:
-  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,intervals
+    const WORKOUTS_NO_SETS_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
+  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,38,intervals
 hr_zone_seconds: null
 exercise_sets: null"#;
 
-    const WORKOUTS_NUMERIC_ID_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,source}:
-  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,intervals
+    const WORKOUTS_NUMERIC_ID_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
+  "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,38,intervals
 hr_zone_seconds: null
 exercise_sets:
   "21234567890"[1]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
     1,chest,bench press,8,80"#;
 
-    const WORKOUTS_UNLABELLED_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,source}:
-  i104,null,"2026-01-03T07:00:00",900,WeightTraining,null,null,null,null,null,intervals
+    const WORKOUTS_UNLABELLED_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
+  i104,null,"2026-01-03T07:00:00",900,WeightTraining,null,null,null,null,null,null,intervals
 hr_zone_seconds: null
 exercise_sets:
   i104[3]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
@@ -772,7 +779,8 @@ exercise_sets:
     "max_hr": null,
     "name": null,
     "source": "intervals",
-    "start_time": "2026-01-03T07:00:00"
+    "start_time": "2026-01-03T07:00:00",
+    "training_load": null
   }
 ]"#;
 
@@ -817,10 +825,10 @@ date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_sc
 2026-01-01 25200 5400 4800 14100 900 null 51.5 null null null null garmin"#;
 
     const WORKOUTS_ISON: &str = r#"table.workouts
-id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps source
-i101 "Push day, heavy" 2026-01-02T07:30:00 3600 WeightTraining 410 118 152 null null intervals
-"21234567890" null 2026-01-01T18:05:00 1800 Run null null null 5220.0 2.9 intervals
-i103 "Legs: \"5x5\" - deload" 2026-01-01T06:00:00 2400 WeightTraining 300 110 140 null null intervals
+id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps training_load source
+i101 "Push day, heavy" 2026-01-02T07:30:00 3600 WeightTraining 410 118 152 null null 52 intervals
+"21234567890" null 2026-01-01T18:05:00 1800 Run null null null 5220.0 2.9 38 intervals
+i103 "Legs: \"5x5\" - deload" 2026-01-01T06:00:00 2400 WeightTraining 300 110 140 null null null intervals
 
 table.hr_zone_seconds
 workout_id z1 z2 z3 z4 z5 z6 z7
@@ -837,20 +845,20 @@ set_order exercise_category exercise_name repetitions weight_kg
 1 legs squat 5 102.5"#;
 
     const WORKOUTS_NO_SETS_ISON: &str = r#"table.workouts
-id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps source
-"21234567890" null 2026-01-01T18:05:00 1800 Run null null null 5220.0 2.9 intervals"#;
+id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps training_load source
+"21234567890" null 2026-01-01T18:05:00 1800 Run null null null 5220.0 2.9 38 intervals"#;
 
     const WORKOUTS_NUMERIC_ID_ISON: &str = r#"table.workouts
-id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps source
-"21234567890" null 2026-01-01T18:05:00 1800 Run null null null 5220.0 2.9 intervals
+id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps training_load source
+"21234567890" null 2026-01-01T18:05:00 1800 Run null null null 5220.0 2.9 38 intervals
 
 table.exercise_sets.21234567890
 set_order exercise_category exercise_name repetitions weight_kg
 1 chest "bench press" 8 80.0"#;
 
     const WORKOUTS_UNLABELLED_ISON: &str = r#"table.workouts
-id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps source
-i104 null 2026-01-03T07:00:00 900 WeightTraining null null null null null intervals
+id name start_time duration_seconds activity_type calories avg_hr max_hr distance_meters avg_speed_mps training_load source
+i104 null 2026-01-03T07:00:00 900 WeightTraining null null null null null null intervals
 
 table.exercise_sets.i104
 set_order exercise_category exercise_name repetitions weight_kg
