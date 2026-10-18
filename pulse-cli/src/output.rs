@@ -105,7 +105,8 @@ pub struct WorkoutLog<'a> {
 
 /// Vitality scores, newest first, plus the pace-of-aging summary when there is one.
 pub struct VitalityReport<'a> {
-    /// Pace of aging; `None` until enough days are scored.
+    /// Pace of aging at the range's last day; `None` when too few of the 7 or 30 days ending
+    /// there have a score.
     pub pace: Option<&'a PaceInfo>,
     /// Daily scores, newest first.
     pub scores: &'a [VitalityScore],

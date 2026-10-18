@@ -575,7 +575,7 @@ fn cmd_vitality(range: &DateRange, format: OutputFormat) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
     let scores = vitality::calculate_vitality(&db, &cfg, range)?;
-    let pace = vitality::calculate_pace(&scores);
+    let pace = vitality::calculate_pace(&db, &cfg, range.end)?;
 
     let report = VitalityReport {
         pace: pace.as_ref(),
@@ -593,14 +593,6 @@ fn cmd_vitality(range: &DateRange, format: OutputFormat) -> anyhow::Result<()> {
         );
     }
 
-    if scores.is_empty() {
-        println!(
-            "No vitality data from {} to {}. (Sleep data is required as anchor.)",
-            range.start, range.end
-        );
-        return Ok(());
-    }
-
     if let Some(ref p) = pace {
         let (emoji, label) = match p.trend {
             vitality::PaceTrend::Slowing => ("\u{1f7e2}", "Slowing"),
@@ -613,6 +605,14 @@ fn cmd_vitality(range: &DateRange, format: OutputFormat) -> anyhow::Result<()> {
             p.multiplier, emoji, label, p.seven_day_avg, p.thirty_day_avg, sign, p.vs_baseline
         );
         println!();
+    }
+
+    if scores.is_empty() {
+        println!(
+            "No vitality data from {} to {}. (Sleep data is required as anchor.)",
+            range.start, range.end
+        );
+        return Ok(());
     }
 
     println!("{}", table::render(table::VITALITY_COLUMNS, &scores));

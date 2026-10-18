@@ -50,8 +50,10 @@ sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds
 - `workouts` carries `training_load`, the workout's training load as Intervals.icu computed it, in whole points, in JSON, TOON and ISON alike; `null` when Intervals.icu computed none. The terminal log line ends with `load 43`, and `--wide` has a `Load` column.
 - `wellness` carries `weight_kg` (kilograms), `body_fat_percent` (percent of body weight), `ctl` (fitness) and `atl` (fatigue), one row per day, in JSON, TOON and ISON alike. `weight_kg` and `body_fat_percent` are `null` on days without a measurement, including days on which Intervals.icu only copied an earlier weight. `ctl` and `atl` of `0` mean no training load yet, not a missing value.
 - A set whose exercise Garmin did not identify has `null` for `exercise_name`, for `exercise_category`, or for both, in JSON, TOON and ISON. The key and the column are always present. The terminal table prints the name, else the category in parentheses, else `-`. A category in parentheses is the group Garmin filed the exercise under, which can be broader than the exercise itself: Upright Row is filed under `(Shrug)`. Releases up to 0.2.0 stored and printed `Unknown` for a missing value. 0.3.0 printed `-` even when the category was known.
-- `vitality` prints a `pace` block (`pace: null` until seven days are scored) followed by a `scores` table. Numbers are rounded as in the terminal table: two decimals for the pace multiplier, one for everything else. JSON keeps full precision.
+- `vitality` prints a `pace` block followed by a `scores` table. `pace: null` means too few of the 7 or 30 days ending on the last day shown have a score (see [Pace of Aging](vitality-score.md#pace-of-aging)). Numbers are rounded as in the terminal table: two decimals for the pace multiplier, one for everything else. JSON keeps full precision.
 - No data prints as empty tables (`sleep: []`).
+
+> **Changed in 0.13.0:** the `vitality` pace compares the 7 days ending on the last day shown with the 30 days ending there, whatever range is shown, and needs a score on at least 5 of the 7 days and 20 of the 30. Before, both averages came from the days shown: with the default `--days 7` the multiplier was always `1.00`, and pace was `null` whenever fewer than 7 days had a score. The fields keep their names; their values can differ from earlier releases for the same dates.
 
 TOON and ISON are compact views, not lossless copies of the JSON output.
 
@@ -70,7 +72,7 @@ date total_seconds deep_seconds rem_seconds light_seconds awake_seconds sleep_sc
 - A value is quoted when it holds a space, a quote or a backslash, or would otherwise read as a number, `true`, `false`, `null`, a reference or a comment: `"Bench Press"`, `"21234567890"`.
 - A decimal number keeps its decimal point (`48.0`), because ISON reads `48` as an integer.
 - `workouts` prints `table.workouts`, then one `table.exercise_sets.<workout id>` block for each workout that has sets.
-- `vitality` prints an `object.pace` block, then `table.scores`. There is no `object.pace` block until seven days are scored.
+- `vitality` prints an `object.pace` block, then `table.scores`. There is no `object.pace` block when there is no pace (`pace: null` in JSON and TOON).
 - A table with no rows is left out; no data at all prints an empty document.
 - To put the output of several commands into one prompt, separate them with an empty line.
 

@@ -124,15 +124,19 @@ lbm_score = clamp(lbm_kg / 70 × 100, 0, 100)
 
 ## Pace of Aging
 
-The `vitality` command also computes a **pace** metric when at least 7 days of scores are available:
+The `vitality` command also computes a **pace** metric. It compares your scores of the last 7 days with those of the last 30 days, both ending on the last day shown (today, or `--to`):
 
 | Field | Meaning |
 |---|---|
-| `seven_day_avg` | Mean score over the 7 newest scored days in the window |
-| `thirty_day_avg` | Mean score over the full window requested |
+| `seven_day_avg` | Mean score over the 7 days ending on the last day shown |
+| `thirty_day_avg` | Mean score over the 30 days ending on the last day shown, those 7 days included |
 | `multiplier` | `seven_day_avg / thirty_day_avg` |
 | `vs_baseline` | `seven_day_avg − thirty_day_avg` (signed) |
 | `trend` | `Slowing` (≥ 1.1), `Steady` (0.9–1.1), or `Accelerating` (< 0.9) |
+
+The two windows do not depend on how many days are shown: `pulse vitality` with the default 7 days still scores the 30 days the baseline needs, and `--days 7` and `--days 30` print the same pace. A day without a score (no sleep data) is left out of both averages, not counted as zero. Pace needs a score on at least 5 of the 7 days and 20 of the 30; with fewer there is no pace, and JSON prints `pace: null`. After a longer break, for example weeks without the watch, pace comes back once 20 of the last 30 days have a score again.
+
+Before 0.13.0 both averages came from the days shown, so the default `--days 7` always printed `1.00x` Steady.
 
 > **Terminology note:** "Slowing" means your recent scores are *higher* than your baseline — you are aging more slowly. "Accelerating" means recent scores are lower — a signal to investigate.
 

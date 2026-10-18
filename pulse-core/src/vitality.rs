@@ -1,11 +1,14 @@
 //! Composite vitality scoring and pace-of-aging trend calculation.
 //!
 //! [`calculate_vitality`] produces a [`VitalityScore`] for each day that has
-//! sleep data (sleep is the "anchor" metric). [`calculate_pace`] derives a
-//! trend from a slice of scored days, indicating whether recent vitality is
-//! above or below the longer-term baseline.
+//! sleep data (sleep is the "anchor" metric). [`calculate_pace`] compares the
+//! scores of the 7 days ending at a date with those of the 30 days ending there,
+//! indicating whether recent vitality is above or below that baseline.
+
+use std::num::NonZeroU32;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use serde::Serialize;
 
 use crate::config::PulseConfig;
@@ -21,8 +24,34 @@ const BASELINE_DAYS: u32 = 30;
 /// That is 31 dates, not 30. The 31-day span is known and deliberate for now, pending a separate
 /// decision; `--days N` meaning "N dates" (issue #22) does not apply to it, which is why this calls
 /// [`DateRange::days_ending`] and not [`DateRange::last_days`].
-fn baseline_range(end: chrono::NaiveDate) -> DateRange {
+fn baseline_range(end: NaiveDate) -> DateRange {
     DateRange::days_ending(end, BASELINE_DAYS)
+}
+
+/// Dates in the pace's recent window: the end date and the 6 days before it.
+const PACE_RECENT_DAYS: NonZeroU32 = NonZeroU32::new(7).unwrap();
+
+/// Dates in the pace's baseline window: the end date and the 29 days before it. One date fewer
+/// than [`baseline_range`] on purpose: the 30 matches the `thirty_day_avg` name and the `30d avg`
+/// label, and the 31-date span of the heart baselines is a separate, pending decision.
+const PACE_BASELINE_DAYS: NonZeroU32 = NonZeroU32::new(30).unwrap();
+
+/// Scored days the recent window needs before there is a pace: 5 of its 7, so up to two nights
+/// without sleep data.
+const PACE_RECENT_MIN_SCORED: usize = 5;
+
+/// Scored days the baseline window needs before there is a pace: 20 of its 30, two-thirds. After a
+/// long gap this keeps pace hidden until the baseline again covers most of a month.
+const PACE_BASELINE_MIN_SCORED: usize = 20;
+
+/// The pace's recent window: `DateRange::last_days(end, PACE_RECENT_DAYS)`.
+fn pace_recent_range(end: NaiveDate) -> DateRange {
+    DateRange::last_days(end, PACE_RECENT_DAYS)
+}
+
+/// The pace's baseline window: `DateRange::last_days(end, PACE_BASELINE_DAYS)`.
+fn pace_baseline_range(end: NaiveDate) -> DateRange {
+    DateRange::last_days(end, PACE_BASELINE_DAYS)
 }
 
 /// Composite vitality score for a single day.
@@ -53,24 +82,61 @@ pub enum PaceTrend {
     Accelerating,
 }
 
-/// Pace-of-aging trend computed from a rolling window of vitality scores.
+/// Pace of aging at a date: the mean score of the 7 days ending there against the mean score
+/// of the 30 days ending there. See [`calculate_pace`].
 #[derive(Debug, Clone, Serialize)]
 pub struct PaceInfo {
-    pub multiplier: f64, // 7d_avg / 30d_avg
+    /// `seven_day_avg / thirty_day_avg`.
+    pub multiplier: f64,
+    /// Direction of `multiplier`: see [`PaceTrend`].
     pub trend: PaceTrend,
-    pub vs_baseline: f64, // 7d_avg - 30d_avg (signed)
+    /// `seven_day_avg - thirty_day_avg`, signed.
+    pub vs_baseline: f64,
+    /// Mean score of the scored days among the 7 days ending at the pace's date.
     pub seven_day_avg: f64,
+    /// Mean score of the scored days among the 30 days ending at the pace's date, the 7 included.
     pub thirty_day_avg: f64,
 }
 
-/// Compute pace-of-aging from a slice of scored days (newest-first).
-/// Returns None if fewer than 7 days are present.
-pub fn calculate_pace(scores: &[VitalityScore]) -> Option<PaceInfo> {
-    if scores.len() < 7 {
+/// Pace of aging at `end`: the mean score of the 7 days ending at `end` against the mean score
+/// of the 30 days ending at `end`, the 7 included.
+///
+/// The windows do not depend on the range a caller displays. This function scores the 30 days
+/// itself with [`calculate_vitality`], so a date gets the same score here as in any range that
+/// also ends at `end`. Days without a score (no sleep data) are left out of both means.
+/// `Ok(None)` when fewer than 5 of the 7 days or 20 of the 30 days have a score.
+pub fn calculate_pace(
+    db: &Database,
+    config: &PulseConfig,
+    end: NaiveDate,
+) -> Result<Option<PaceInfo>> {
+    let scores = calculate_vitality(db, config, &pace_baseline_range(end))?;
+    Ok(pace_from_scores(&scores, end))
+}
+
+/// Mean `total_score` of the scores dated inside `range`, or `None` when fewer than `min_scored`
+/// of them are. A date that does not parse as `YYYY-MM-DD` does not count.
+fn mean_score_in(scores: &[VitalityScore], range: &DateRange, min_scored: usize) -> Option<f64> {
+    let totals: Vec<f64> = scores
+        .iter()
+        .filter(|s| {
+            s.date
+                .parse::<NaiveDate>()
+                .is_ok_and(|d| range.start <= d && d <= range.end)
+        })
+        .map(|s| s.total_score)
+        .collect();
+    if totals.len() < min_scored {
         return None;
     }
-    let seven_day_avg = scores[..7].iter().map(|s| s.total_score).sum::<f64>() / 7.0;
-    let thirty_day_avg = scores.iter().map(|s| s.total_score).sum::<f64>() / scores.len() as f64;
+    Some(totals.iter().sum::<f64>() / totals.len() as f64)
+}
+
+/// Pace at `end` from `scores`, in any order. Scores dated outside the 30-day window are ignored.
+fn pace_from_scores(scores: &[VitalityScore], end: NaiveDate) -> Option<PaceInfo> {
+    let seven_day_avg = mean_score_in(scores, &pace_recent_range(end), PACE_RECENT_MIN_SCORED)?;
+    let thirty_day_avg =
+        mean_score_in(scores, &pace_baseline_range(end), PACE_BASELINE_MIN_SCORED)?;
     if thirty_day_avg == 0.0 {
         return None;
     }
@@ -728,7 +794,7 @@ mod tests {
     fn vitality_scores_only_the_days_in_the_range() {
         let db = crate::db::Database::open_memory().unwrap();
         for day in 1..=10 {
-            insert_sleep_day(&db, &format!("2026-03-{day:02}"));
+            insert_sleep_hours(&db, &format!("2026-03-{day:02}"), 8);
         }
         let range = DateRange {
             start: date("2026-03-03"),
@@ -752,7 +818,7 @@ mod tests {
     fn baselines_are_the_30_days_ending_at_the_range_end() {
         let db = crate::db::Database::open_memory().unwrap();
         let day = date("2026-03-31");
-        insert_sleep_day(&db, "2026-03-31");
+        insert_sleep_hours(&db, "2026-03-31", 8);
         // Inside the baseline window (03-01..=03-31), and the scored day itself.
         insert_heart_day(&db, "2026-03-01", Some(60), Some(50.0), None);
         insert_heart_day(&db, "2026-03-31", Some(60), Some(50.0), None);
@@ -773,7 +839,7 @@ mod tests {
     #[test]
     fn vo2_fallback_uses_the_30_days_ending_at_the_range_end() {
         let db = crate::db::Database::open_memory().unwrap();
-        insert_sleep_day(&db, "2026-03-31");
+        insert_sleep_hours(&db, "2026-03-31", 8);
         insert_heart_day(&db, "2026-03-01", None, None, Some(50.0));
         insert_heart_day(&db, "2026-02-28", None, None, Some(30.0));
         insert_heart_day(&db, "2026-03-31", None, None, None);
@@ -789,13 +855,15 @@ mod tests {
         );
     }
 
-    /// Insert a sleep row of 8 hours for `date`, so the day gets a vitality score.
-    fn insert_sleep_day(db: &crate::db::Database, date: &str) {
+    /// Insert a sleep row of `hours` hours for `date`, so the day gets a vitality score. With
+    /// `test_config()` and no other data the day scores 0.30 × min(hours / 8 × 100, 100) + 35:
+    /// 65.0 for 8 h, 50.0 for 4 h.
+    fn insert_sleep_hours(db: &crate::db::Database, date: &str, hours: i64) {
         queries::upsert_sleep(
             db,
             &Sleep {
                 date: date.into(),
-                total_seconds: 28800,
+                total_seconds: hours * 3600,
                 deep_seconds: 0,
                 rem_seconds: 0,
                 light_seconds: 0,
@@ -812,6 +880,19 @@ mod tests {
         .unwrap();
     }
 
+    /// `insert_sleep_hours` on each date `offset` days before `end` (offset 0 is `end`).
+    fn insert_sleep_before(
+        db: &crate::db::Database,
+        end: chrono::NaiveDate,
+        offsets: impl IntoIterator<Item = u64>,
+        hours: i64,
+    ) {
+        for offset in offsets {
+            let day = end - chrono::Days::new(offset);
+            insert_sleep_hours(db, &day.to_string(), hours);
+        }
+    }
+
     #[test]
     fn fitness_uses_the_30_day_vo2_average_on_days_without_an_estimate() {
         let db = crate::db::Database::open_memory().unwrap();
@@ -825,7 +906,7 @@ mod tests {
 
         for (date, vo2_max) in days {
             let date = date.to_string();
-            insert_sleep_day(&db, &date);
+            insert_sleep_hours(&db, &date, 8);
             queries::upsert_heart(
                 &db,
                 &Heart {
@@ -865,7 +946,7 @@ mod tests {
         let mut config = test_config();
         config.user.vo2_max = Some(42.0);
         let today = chrono::Local::now().date_naive().to_string();
-        insert_sleep_day(&db, &today);
+        insert_sleep_hours(&db, &today, 8);
 
         let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
 
@@ -1130,36 +1211,155 @@ mod tests {
     // calculate_pace
     // -----------------------------------------------------------------------
 
-    fn make_score(total: f64) -> VitalityScore {
-        VitalityScore {
-            date: "2026-01-01".into(),
-            total_score: total,
-            sleep_score: 0.0,
-            recovery_score: 0.0,
-            activity_score: 0.0,
-            stress_score: 0.0,
-            fitness_score: None,
+    /// One score per day: `totals[i]` is dated `i` days before `end`. Other fields 0.0 / None.
+    fn daily_scores(end: chrono::NaiveDate, totals: &[f64]) -> Vec<VitalityScore> {
+        totals
+            .iter()
+            .enumerate()
+            .map(|(offset, &total)| VitalityScore {
+                date: (end - chrono::Days::new(offset as u64)).to_string(),
+                total_score: total,
+                sleep_score: 0.0,
+                recovery_score: 0.0,
+                activity_score: 0.0,
+                stress_score: 0.0,
+                fitness_score: None,
+            })
+            .collect()
+    }
+
+    /// `count` copies of `total`, for building `daily_scores` inputs.
+    fn repeat_score(total: f64, count: usize) -> Vec<f64> {
+        vec![total; count]
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn pace_windows_are_the_7_and_30_dates_ending_at_the_end() {
+        let end = date("2026-03-31");
+
+        let recent = pace_recent_range(end);
+        assert_eq!(recent.start, date("2026-03-25"));
+        assert_eq!(recent.end, end);
+
+        let baseline = pace_baseline_range(end);
+        assert_eq!(baseline.start, date("2026-03-02"));
+        assert_eq!(baseline.end, end);
+        assert_eq!((baseline.end - baseline.start).num_days() + 1, 30);
+        assert_eq!(
+            (baseline_range(end).end - baseline_range(end).start).num_days() + 1,
+            31,
+            "the heart baselines keep their 31 dates"
+        );
+    }
+
+    #[test]
+    fn pace_with_a_week_shown_still_uses_30_days() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, 0..=6, 8);
+        insert_sleep_before(&db, end, 7..=29, 4);
+
+        let pace = calculate_pace(&db, &test_config(), end)
+            .unwrap()
+            .expect("pace present");
+        assert_close(pace.seven_day_avg, 65.0);
+        assert_close(pace.thirty_day_avg, 53.5);
+        assert_close(pace.vs_baseline, 11.5);
+        assert!(matches!(pace.trend, PaceTrend::Slowing));
+
+        // The week the table shows and the pace's recent window agree.
+        let shown = calculate_vitality(
+            &db,
+            &test_config(),
+            &DateRange::last_days(end, std::num::NonZeroU32::new(7).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(shown.len(), 7);
+        let shown_mean = shown.iter().map(|s| s.total_score).sum::<f64>() / 7.0;
+        assert_close(shown_mean, pace.seven_day_avg);
+    }
+
+    #[test]
+    fn pace_windows_end_at_the_given_date() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, 0..=6, 8);
+        insert_sleep_before(&db, end, [7], 4); // 03-24: in the baseline, not in the recent window
+        insert_sleep_before(&db, end, 8..=29, 8);
+        insert_sleep_before(&db, end, [30], 4); // 03-01: one date before the baseline
+        for day in 1..=7 {
+            // April: after `end`, in neither window
+            insert_sleep_hours(&db, &format!("2026-04-{day:02}"), 4);
         }
+
+        let pace = calculate_pace(&db, &test_config(), end)
+            .unwrap()
+            .expect("pace present");
+        assert_close(pace.seven_day_avg, 65.0);
+        assert_close(pace.thirty_day_avg, (29.0 * 65.0 + 50.0) / 30.0);
     }
 
     #[test]
-    fn pace_returns_none_with_fewer_than_7_scores() {
-        let scores: Vec<VitalityScore> = (0..6).map(|_| make_score(70.0)).collect();
-        assert!(calculate_pace(&scores).is_none());
+    fn pace_with_5_of_the_7_recent_days_scored() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, (0..=4).chain(7..=21), 8);
+
+        let pace = calculate_pace(&db, &test_config(), end)
+            .unwrap()
+            .expect("pace present");
+        assert_close(pace.seven_day_avg, 65.0);
     }
 
     #[test]
-    fn pace_returns_some_with_7_or_more_scores() {
-        let scores: Vec<VitalityScore> = (0..7).map(|_| make_score(70.0)).collect();
-        assert!(calculate_pace(&scores).is_some());
+    fn no_pace_with_4_of_the_7_recent_days_scored() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, (0..=3).chain(7..=22), 8);
+
+        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_none());
+    }
+
+    #[test]
+    fn pace_with_20_of_the_30_days_scored() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, (0..=6).chain(7..=19), 8);
+
+        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_some());
+    }
+
+    #[test]
+    fn no_pace_with_19_of_the_30_days_scored() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, (0..=6).chain(7..=18), 8);
+
+        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_none());
+    }
+
+    #[test]
+    fn no_pace_without_scores() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+
+        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_none());
     }
 
     #[test]
     fn pace_slowing_when_recent_above_baseline() {
-        // 7 recent days at 77, 3 older days at 50 → 7d_avg=77, 30d_avg=(77*7+50*3)/10=68.9
-        let mut scores: Vec<VitalityScore> = (0..7).map(|_| make_score(77.0)).collect();
-        scores.extend((0..3).map(|_| make_score(50.0)));
-        let pace = calculate_pace(&scores).unwrap();
+        // 7 recent days at 77, 23 older days at 50
+        let end = date("2026-03-31");
+        let mut totals = repeat_score(77.0, 7);
+        totals.extend(repeat_score(50.0, 23));
+        let pace = pace_from_scores(&daily_scores(end, &totals), end).unwrap();
         assert!(
             matches!(pace.trend, PaceTrend::Slowing),
             "Expected Slowing, multiplier={:.3}",
@@ -1171,10 +1371,11 @@ mod tests {
 
     #[test]
     fn pace_accelerating_when_recent_below_baseline() {
-        // 7 recent days at 50, 3 older days at 80
-        let mut scores: Vec<VitalityScore> = (0..7).map(|_| make_score(50.0)).collect();
-        scores.extend((0..3).map(|_| make_score(80.0)));
-        let pace = calculate_pace(&scores).unwrap();
+        // 7 recent days at 50, 23 older days at 80
+        let end = date("2026-03-31");
+        let mut totals = repeat_score(50.0, 7);
+        totals.extend(repeat_score(80.0, 23));
+        let pace = pace_from_scores(&daily_scores(end, &totals), end).unwrap();
         assert!(
             matches!(pace.trend, PaceTrend::Accelerating),
             "Expected Accelerating, multiplier={:.3}",
@@ -1186,9 +1387,9 @@ mod tests {
 
     #[test]
     fn pace_steady_when_near_baseline() {
-        // All 10 days at 70 → multiplier = 1.0
-        let scores: Vec<VitalityScore> = (0..10).map(|_| make_score(70.0)).collect();
-        let pace = calculate_pace(&scores).unwrap();
+        // All 30 days at 70 → multiplier = 1.0
+        let end = date("2026-03-31");
+        let pace = pace_from_scores(&daily_scores(end, &repeat_score(70.0, 30)), end).unwrap();
         assert!(
             matches!(pace.trend, PaceTrend::Steady),
             "Expected Steady, multiplier={:.3}",
@@ -1200,15 +1401,14 @@ mod tests {
 
     #[test]
     fn pace_vs_baseline_is_signed_delta() {
-        // 7 recent = 75, 3 older = 60 → 7d_avg=75, 30d_avg=(75*7+60*3)/10=70.5
-        let mut scores: Vec<VitalityScore> = (0..7).map(|_| make_score(75.0)).collect();
-        scores.extend((0..3).map(|_| make_score(60.0)));
-        let pace = calculate_pace(&scores).unwrap();
-        let expected_7d = 75.0_f64;
-        let expected_30d = (75.0 * 7.0 + 60.0 * 3.0) / 10.0;
-        assert!((pace.seven_day_avg - expected_7d).abs() < 0.01);
-        assert!((pace.thirty_day_avg - expected_30d).abs() < 0.01);
-        assert!((pace.vs_baseline - (expected_7d - expected_30d)).abs() < 0.01);
+        // 7 recent = 75, 23 older = 60 → 7d_avg=75, 30d_avg=(75*7+60*23)/30=63.5
+        let end = date("2026-03-31");
+        let mut totals = repeat_score(75.0, 7);
+        totals.extend(repeat_score(60.0, 23));
+        let pace = pace_from_scores(&daily_scores(end, &totals), end).unwrap();
+        assert_close(pace.seven_day_avg, 75.0);
+        assert_close(pace.thirty_day_avg, 63.5);
+        assert_close(pace.vs_baseline, 11.5);
     }
 
     // -----------------------------------------------------------------------
