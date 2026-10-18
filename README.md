@@ -4,7 +4,7 @@ Pulse is a unified health data aggregator that pulls data from Garmin Connect an
 
 ## Features
 
-- **Sync** data from Garmin Connect (sleep, HRV, VO2 max, steps, stress, workouts) and Intervals.icu (workouts, weight, body fat, fitness and fatigue)
+- **Sync** data from Garmin Connect (sleep, heart rate, HRV, VO2 max, Body Battery, steps, stress, strength exercise sets) and Intervals.icu (workouts, weight, body fat, fitness and fatigue)
 - **Vitality score** — weighted daily composite with configurable targets
 - **Fitness scoring** — VO2 max percentiles (Shvartz & Reinbold norms) + FFMI from lean body mass
 - **Raw data tables** — sleep, heart rate, recovery, activity, stress, workouts, wellness; `--wide` shows every stored column
@@ -15,14 +15,14 @@ Pulse is a unified health data aggregator that pulls data from Garmin Connect an
 ## Quick Start
 
 ```bash
-# 1. Build
-cargo build --release
+# 1. Install (puts `pulse` in ~/.cargo/bin)
+cargo install pulse-cli
 
 # 2. Initialise config (creates ~/.pulse/config.toml)
 pulse config init
 
-# 3. Authenticate with Garmin (optional)
-pulse garmin-login
+# 3. Authenticate with Garmin (optional; prompts for the password)
+pulse garmin-login -u you@example.com
 
 # 4. Sync and view vitality
 pulse sync
@@ -33,7 +33,7 @@ pulse vitality
 
 | Requirement | Version |
 |---|---|
-| Rust (stable) | 1.80+ |
+| Rust (stable) | 1.88+ |
 | Garmin Connect account | optional |
 | Intervals.icu API key | optional |
 
@@ -43,6 +43,7 @@ pulse vitality
 - [Configuration](wiki/configuration.md)
 - [Usage](wiki/usage.md)
 - [Syncing data](wiki/syncing.md)
+- [Vitality score](wiki/vitality-score.md)
 
 ## License
 

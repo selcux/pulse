@@ -11,7 +11,7 @@
 | `pulse vitality` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json` | Daily vitality score table |
 | `pulse sleep` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Sleep stages, score, HRV, bed and wake time |
 | `pulse heart` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Heart rate, HRV and VO2 max |
-| `pulse recovery` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | HRV and recovery scores |
+| `pulse recovery` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Body Battery charged, drained, peak and low |
 | `pulse activity` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Steps, activity, calories and distance |
 | `pulse stress` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Stress scores and time at each stress level |
 | `pulse workouts` | `--days N`, `--from DATE`, `--to DATE`, `--format FMT`, `--json`, `--wide` | Workout log with distance, pace, heart rate zones and training load |
@@ -80,13 +80,15 @@ The vitality score is a daily 0–100 composite. Each component is scored indepe
 
 | Component | Weight | Source |
 |---|---|---|
-| Sleep | 25% | Duration vs `sleep_target_hours`, quality metrics |
-| Recovery | 20% | HRV score from Garmin |
+| Sleep | 25% | Duration vs `sleep_target_hours`, Garmin sleep score |
+| Recovery | 20% | Body Battery peak, HRV and resting heart rate against their baselines |
 | Activity | 20% | Steps vs `steps_target` |
 | Stress | 15% | Garmin stress score (lower = better) |
 | Fitness | 20% | VO2 max percentile + FFMI (if LBM configured) |
 
-Fitness scoring uses **Shvartz & Reinbold** population norms for VO2 max percentiles and FFMI calculated from `lean_body_mass_kg` and `height_cm`.
+Fitness counts only when a VO2 max value or `lean_body_mass_kg` is available; without either, the other four are weighted 30/25/25/20. Fitness scoring uses **Shvartz & Reinbold** population norms for VO2 max percentiles and FFMI calculated from `lean_body_mass_kg` and `height_cm`.
+
+See [Vitality score](vitality-score.md) for the formulas, the pace trend and a worked example.
 
 ## Examples
 

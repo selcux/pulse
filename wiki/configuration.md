@@ -10,6 +10,8 @@ Personal targets and biometrics used for scoring.
 |---|---|---|---|
 | `sleep_target_hours` | float | `8.0` | Sleep duration target for scoring (hours) |
 | `steps_target` | int | `10000` | Daily step goal |
+| `rhr_baseline` | float | — | Resting heart rate baseline (bpm) for the recovery score. When unset, the average of the synced data over the last 30 days is used. |
+| `hrv_baseline` | float | — | HRV baseline (ms) for the recovery score. Same fallback as `rhr_baseline`. |
 | `vo2_max` | float | — | Fallback VO2 max (ml/kg/min), used when no VO2 max estimate was synced from Garmin in the last 30 days. |
 | `lean_body_mass_kg` | float | — | Lean body mass in kg. Required for FFMI fitness scoring. |
 | `height_cm` | float | — | Height in cm. When set, enables FFMI over flat-reference LBM. |
@@ -31,17 +33,17 @@ age = 35
 | Field | Type | Description |
 |---|---|---|
 | `enabled` | bool | Enable Garmin Connect sync |
-| `username` | string | Garmin Connect email |
-| `password` | string | Garmin Connect password |
+| `username` | string | Garmin Connect email, used by `pulse garmin-login` when `-u` is not given (optional) |
 
 ```toml
 [providers.garmin]
 enabled = true
 username = "you@example.com"
-password = "your-password"
 ```
 
-> **Note:** Credentials are stored in plaintext. Restrict file permissions: `chmod 600 ~/.pulse/config.toml`.
+The password is never stored in the config. `pulse garmin-login` asks for it, then keeps OAuth tokens in `~/.pulse/garmin/`.
+
+> **Note:** The Intervals.icu API key below is stored in plaintext. Restrict file permissions: `chmod 600 ~/.pulse/config.toml`.
 
 ## `[providers.intervals]`
 

@@ -16,7 +16,7 @@ Sleep records act as the anchor — a score is produced for every date that has 
 | Stress | 20% | 15% | Garmin average stress (inverted) |
 | Fitness | — | 20% | VO2 max percentile + FFMI |
 
-Fitness is **optional**: it is included only when VO2 max data is available (synced from Garmin or set via `vo2_max` in config). When it is absent the other four weights re-normalise to sum to 100%.
+Fitness is **optional**: it is included when VO2 max data is available (synced from Garmin or set via `vo2_max` in config) or `lean_body_mass_kg` is set. When neither is there the other four weights re-normalise to sum to 100%.
 
 ---
 
@@ -50,7 +50,7 @@ Average of whichever of these are available for the day:
 
 **Baselines** are resolved in priority order:
 1. `rhr_baseline` / `hrv_baseline` from config — explicit personal override
-2. Average of the synced heart data over the 30 days up to the last day shown (today, or `--to`)
+2. Average of the synced heart data over the last day shown (today, or `--to`) and the 30 days before it
 3. Hardcoded fallbacks: RHR = 60 bpm, HRV = 50 ms
 
 At baseline, both HRV and RHR contribute 100. A RHR 10% above baseline scores ~90; a RHR 10% below baseline scores 110 (capped at 100).
@@ -100,7 +100,7 @@ Scored against **Shvartz & Reinbold (1990)** population norms using piecewise li
 
 VO2 max source priority:
 1. The estimate Garmin made that day (Garmin estimates VO2 max only after qualifying activities, so most days have none)
-2. Average of the estimates synced in the 30 days up to the last day shown (today, or `--to`)
+2. Average of the estimates synced over the last day shown (today, or `--to`) and the 30 days before it
 3. `vo2_max` in config
 
 #### FFMI (Fat-Free Mass Index)

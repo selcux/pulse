@@ -7,20 +7,19 @@
 ```toml
 [providers.garmin]
 enabled = true
-username = "you@example.com"
-password = "your-password"
+username = "you@example.com"   # optional, saves typing -u
 ```
 
-2. **Authenticate** (required once; session is cached):
+2. **Authenticate** (required once; pulse prompts for the password and keeps OAuth tokens in `~/.pulse/garmin/`, refreshing them as they expire):
 
 ```bash
-pulse garmin-login
+pulse garmin-login -u you@example.com
 ```
 
-If your account has two-factor authentication enabled, wait for the MFA prompt and pass the code:
+If your account has two-factor authentication enabled, the first run stops with `MFA required`. Run it again with the code Garmin sent you:
 
 ```bash
-pulse garmin-login --mfa 123456
+pulse garmin-login -u you@example.com --mfa 123456
 ```
 
 3. **Sync:**
@@ -73,6 +72,10 @@ api_key = "your-api-key"
 ```bash
 pulse sync intervals
 ```
+
+### Strength exercise sets
+
+Intervals.icu does not keep the sets, reps and weights of a strength workout, so pulse fetches them from Garmin Connect while it syncs Intervals.icu, using the Garmin activity the workout was imported from. This needs a Garmin login (`pulse garmin-login`), even if Garmin sync itself is disabled. Without one, strength workouts sync without their sets; log in and sync those days again to fill them in.
 
 ### Distance and pace
 
@@ -132,7 +135,7 @@ pulse sync --from 2026-09-01 --to 2026-09-30  # sync exactly September
 
 Pulse keeps every response body it receives from Garmin and Intervals.icu (see `[storage]` in [Configuration](configuration.md)). Later versions use them to fill new columns for days you have already synced, and `pulse rebuild` refills the data tables from them without network access.
 
-Only days synced from this version on have a stored body. To cover older days, sync them once:
+Only days synced with 0.5.0 or later have a stored body. To cover older days, sync them once:
 
 ```bash
 pulse sync --days 365

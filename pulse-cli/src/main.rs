@@ -98,7 +98,7 @@ enum Commands {
         #[command(flatten)]
         output: StoredOutputArgs,
     },
-    /// Show composite vitality score (sleep + recovery + activity + stress)
+    /// Show composite vitality score (sleep + recovery + activity + stress, + fitness when available)
     Vitality {
         #[command(flatten)]
         range: RangeArgs,
