@@ -96,8 +96,8 @@ pub struct Rows<'a, T> {
 
 /// Workouts, newest first, each with its exercise sets in `set_order`.
 ///
-/// In TOON and ISON, `hr_zone_seconds` leaves the workouts rows for its own table, one row per
-/// workout with zone times, because a cell cannot hold an array.
+/// In TOON and ISON, `hr_zone_seconds` and `hr_zone_max_bpm` leave the workouts rows for tables of
+/// their own, one row per workout that has the list, because a cell cannot hold an array.
 pub struct WorkoutLog<'a> {
     /// One entry per workout, paired with its exercise sets.
     pub entries: &'a [(Workout, Vec<ExerciseSet>)],
@@ -127,14 +127,14 @@ impl<T: serde::Serialize> Report for Rows<'_, T> {
 }
 
 impl WorkoutLog<'_> {
-    /// One flat row per workout with zone times, `{workout_id, z1, ..., zN}`, in entry order.
-    /// N is the longest zone list; a shorter one gets `null` for the zones it lacks. `Null` when
-    /// no workout has zone times, as for `exercise_sets`.
-    fn zone_table(&self) -> Value {
-        let zoned: Vec<(&str, &[i64])> = self
+    /// One flat row per workout whose `list` is `Some` and not empty, `{workout_id, z1, ..., zN}`,
+    /// in entry order. N is the longest list; a shorter one gets `null` for the zones it lacks.
+    /// `Null` when no workout has one, as for `exercise_sets`.
+    fn zone_table<T: Copy + Into<Value>>(&self, list: fn(&Workout) -> Option<&[T]>) -> Value {
+        let zoned: Vec<(&str, &[T])> = self
             .entries
             .iter()
-            .filter_map(|(w, _)| Some((w.id.as_str(), w.hr_zone_seconds.as_deref()?)))
+            .filter_map(|(w, _)| Some((w.id.as_str(), list(w)?)))
             .filter(|(_, zones)| !zones.is_empty())
             .collect();
         let zone_count = zoned
@@ -153,7 +153,7 @@ impl WorkoutLog<'_> {
                 for n in 0..zone_count {
                     row.insert(
                         format!("z{}", n + 1),
-                        zones.get(n).map_or(Value::Null, |s| Value::from(*s)),
+                        zones.get(n).map_or(Value::Null, |s| (*s).into()),
                     );
                 }
                 Value::Object(row)
@@ -186,8 +186,9 @@ impl Report for WorkoutLog<'_> {
         )?;
         for row in workouts.as_array_mut().into_iter().flatten() {
             if let Some(row) = row.as_object_mut() {
-                // The zones get their own table below; a cell cannot hold an array.
+                // The zone lists get their own tables below; a cell cannot hold an array.
                 row.shift_remove("hr_zone_seconds");
+                row.shift_remove("hr_zone_max_bpm");
             }
         }
         // One table of sets per workout, keyed by the workout id, so the id is stated once
@@ -210,7 +211,14 @@ impl Report for WorkoutLog<'_> {
         }
         let mut tables = Map::new();
         tables.insert("workouts".into(), workouts);
-        tables.insert("hr_zone_seconds".into(), self.zone_table());
+        tables.insert(
+            "hr_zone_seconds".into(),
+            self.zone_table(|w| w.hr_zone_seconds.as_deref()),
+        );
+        tables.insert(
+            "hr_zone_max_bpm".into(),
+            self.zone_table(|w| w.hr_zone_max_bpm.as_deref()),
+        );
         // Null, not an empty group: a bare `exercise_sets:` as the last line reads as cut off.
         let sets = if sets_by_workout.is_empty() {
             Value::Null
@@ -351,6 +359,7 @@ mod tests {
                     distance_meters: None,
                     avg_speed_mps: None,
                     hr_zone_seconds: Some(vec![1500, 1200, 600, 300, 0]),
+                    hr_zone_max_bpm: Some(vec![130, 145, 160, 172, 185]),
                     training_load: Some(52),
                     source: "intervals".into(),
                 },
@@ -388,6 +397,7 @@ mod tests {
                     distance_meters: Some(5220.0),
                     avg_speed_mps: Some(2.9),
                     hr_zone_seconds: None,
+                    hr_zone_max_bpm: None,
                     training_load: Some(38),
                     source: "intervals".into(),
                 },
@@ -406,6 +416,7 @@ mod tests {
                     distance_meters: None,
                     avg_speed_mps: None,
                     hr_zone_seconds: Some(vec![900, 1200, 300, 0, 0, 0, 0]),
+                    hr_zone_max_bpm: Some(vec![123, 137, 143, 153, 157, 162, 170]),
                     training_load: None,
                     source: "intervals".into(),
                 },
@@ -446,6 +457,7 @@ mod tests {
                 distance_meters: None,
                 avg_speed_mps: None,
                 hr_zone_seconds: None,
+                hr_zone_max_bpm: None,
                 training_load: None,
                 source: "intervals".into(),
             },
@@ -551,6 +563,13 @@ mod tests {
         "workout_id": "i101"
       }
     ],
+    "hr_zone_max_bpm": [
+      130,
+      145,
+      160,
+      172,
+      185
+    ],
     "hr_zone_seconds": [
       1500,
       1200,
@@ -573,6 +592,7 @@ mod tests {
     "distance_meters": 5220.0,
     "duration_seconds": 1800,
     "exercise_sets": [],
+    "hr_zone_max_bpm": null,
     "hr_zone_seconds": null,
     "id": "21234567890",
     "max_hr": null,
@@ -598,6 +618,15 @@ mod tests {
         "weight_kg": 102.5,
         "workout_id": "i103"
       }
+    ],
+    "hr_zone_max_bpm": [
+      123,
+      137,
+      143,
+      153,
+      157,
+      162,
+      170
     ],
     "hr_zone_seconds": [
       900,
@@ -710,6 +739,9 @@ mod tests {
 hr_zone_seconds[2]{workout_id,z1,z2,z3,z4,z5,z6,z7}:
   i101,1500,1200,600,300,0,null,null
   i103,900,1200,300,0,0,0,0
+hr_zone_max_bpm[2]{workout_id,z1,z2,z3,z4,z5,z6,z7}:
+  i101,130,145,160,172,185,null,null
+  i103,123,137,143,153,157,162,170
 exercise_sets:
   i101[2]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
     1,chest,bench press,8,80
@@ -720,11 +752,13 @@ exercise_sets:
     const WORKOUTS_NO_SETS_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
   "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,38,intervals
 hr_zone_seconds: null
+hr_zone_max_bpm: null
 exercise_sets: null"#;
 
     const WORKOUTS_NUMERIC_ID_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
   "21234567890",null,"2026-01-01T18:05:00",1800,Run,null,null,null,5220,2.9,38,intervals
 hr_zone_seconds: null
+hr_zone_max_bpm: null
 exercise_sets:
   "21234567890"[1]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
     1,chest,bench press,8,80"#;
@@ -732,6 +766,7 @@ exercise_sets:
     const WORKOUTS_UNLABELLED_TOON: &str = r#"workouts[1]{id,name,start_time,duration_seconds,activity_type,calories,avg_hr,max_hr,distance_meters,avg_speed_mps,training_load,source}:
   i104,null,"2026-01-03T07:00:00",900,WeightTraining,null,null,null,null,null,null,intervals
 hr_zone_seconds: null
+hr_zone_max_bpm: null
 exercise_sets:
   i104[3]{set_order,exercise_category,exercise_name,repetitions,weight_kg}:
     1,Curl,null,12,null
@@ -775,6 +810,7 @@ exercise_sets:
         "workout_id": "i104"
       }
     ],
+    "hr_zone_max_bpm": null,
     "hr_zone_seconds": null,
     "id": "i104",
     "max_hr": null,
@@ -835,6 +871,11 @@ table.hr_zone_seconds
 workout_id z1 z2 z3 z4 z5 z6 z7
 i101 1500 1200 600 300 0 null null
 i103 900 1200 300 0 0 0 0
+
+table.hr_zone_max_bpm
+workout_id z1 z2 z3 z4 z5 z6 z7
+i101 130 145 160 172 185 null null
+i103 123 137 143 153 157 162 170
 
 table.exercise_sets.i101
 set_order exercise_category exercise_name repetitions weight_kg
@@ -966,7 +1007,7 @@ date steps active_minutes floors total_kcal active_kcal bmr_kcal distance_meters
     fn workouts_toon_empty() {
         assert_eq!(
             toon(&WorkoutLog { entries: &[] }),
-            "workouts: []\nhr_zone_seconds: null\nexercise_sets: null"
+            "workouts: []\nhr_zone_seconds: null\nhr_zone_max_bpm: null\nexercise_sets: null"
         );
     }
 

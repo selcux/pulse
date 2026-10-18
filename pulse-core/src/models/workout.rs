@@ -33,6 +33,12 @@ pub struct Workout {
     /// differ from `duration_seconds` by a minute or two. `None` when the provider recorded no zone
     /// time: no heart rate, or every zone at 0.
     pub hr_zone_seconds: Option<Vec<i64>>,
+    /// Top of each heart rate zone in bpm, lowest zone first (`[0]` is the top of Z1), as the
+    /// provider set them when it analysed this workout: the limits `hr_zone_seconds` was counted
+    /// against. Each zone runs from above the previous top up to its own. Strictly rising. `None`
+    /// when the provider sent no limits. If its length differs from `hr_zone_seconds`, the two
+    /// lists cannot be paired by position.
+    pub hr_zone_max_bpm: Option<Vec<i32>>,
     /// Training load of the workout in the provider's whole load points. For Intervals.icu this is
     /// its own load score, computed from power, heart rate or pace, whichever it uses for the
     /// activity. `None` when the provider computed no load.

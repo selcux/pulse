@@ -344,28 +344,29 @@ pub fn query_wellness(db: &Database, range: &DateRange) -> Result<Vec<Wellness>>
 // Workouts
 // ---------------------------------------------------------------------------
 
-/// `hr_zone_seconds` as stored: JSON array text such as `[491,158,0]`, the same text the v9
-/// backfill's `json_extract` writes.
-fn zones_to_text(seconds: Option<&[i64]>) -> Result<Option<String>> {
-    seconds
-        .map(|s| serde_json::to_string(s).context("Failed to encode heart rate zone times"))
+/// A per-zone list (`hr_zone_seconds`, `hr_zone_max_bpm`) as stored: JSON array text such as
+/// `[491,158,0]`, the same text the v9 and v12 backfills' `json_extract` writes.
+fn zones_to_text<T: serde::Serialize>(values: Option<&[T]>) -> Result<Option<String>> {
+    values
+        .map(|v| serde_json::to_string(v).context("Failed to encode a heart rate zone list"))
         .transpose()
 }
 
-/// Stored `hr_zone_seconds` text back as seconds. Text that is not a JSON array of integers
-/// reads as `None`, so a damaged cell hides the zones, not the workout.
-fn zones_from_text(text: Option<String>) -> Option<Vec<i64>> {
+/// A stored per-zone list back as values. Text that is not a JSON array of `T` reads as
+/// `None`, so a damaged cell hides the list, not the workout.
+fn zones_from_text<T: serde::de::DeserializeOwned>(text: Option<String>) -> Option<Vec<T>> {
     serde_json::from_str(&text?).ok()
 }
 
 /// Insert or replace a workout record for `w.id`.
 ///
-/// `hr_zone_seconds` is stored as JSON array text, such as `[491,158,0]`.
+/// `hr_zone_seconds` and `hr_zone_max_bpm` are stored as JSON array text, such as `[491,158,0]`.
 pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
     let zones = zones_to_text(w.hr_zone_seconds.as_deref())?;
+    let zone_tops = zones_to_text(w.hr_zone_max_bpm.as_deref())?;
     db.conn().execute(
-        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, training_load, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT OR REPLACE INTO workouts (id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, hr_zone_max_bpm, training_load, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             w.id,
             w.name.as_deref(),
@@ -378,6 +379,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
             w.distance_meters,
             w.avg_speed_mps,
             zones,
+            zone_tops,
             w.training_load,
             w.source,
         ],
@@ -389,7 +391,7 @@ pub fn upsert_workout(db: &Database, w: &Workout) -> Result<()> {
 /// newest-first.
 pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> {
     let mut stmt = db.conn().prepare(
-        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, training_load, source
+        "SELECT id, name, start_time, duration_seconds, activity_type, calories, avg_hr, max_hr, distance_meters, avg_speed_mps, hr_zone_seconds, hr_zone_max_bpm, training_load, source
          FROM workouts WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2 ORDER BY start_time DESC",
     )?;
     let (start, end) = date_params(range);
@@ -406,8 +408,9 @@ pub fn query_workouts(db: &Database, range: &DateRange) -> Result<Vec<Workout>> 
             distance_meters: row.get(8)?,
             avg_speed_mps: row.get(9)?,
             hr_zone_seconds: zones_from_text(row.get(10)?),
-            training_load: row.get(11)?,
-            source: row.get(12)?,
+            hr_zone_max_bpm: zones_from_text(row.get(11)?),
+            training_load: row.get(12)?,
+            source: row.get(13)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -712,6 +715,7 @@ mod tests {
             distance_meters: None,
             avg_speed_mps: None,
             hr_zone_seconds: None,
+            hr_zone_max_bpm: None,
             training_load: None,
             source: "intervals".into(),
         };
@@ -769,6 +773,7 @@ mod tests {
             distance_meters: None,
             avg_speed_mps: None,
             hr_zone_seconds: None,
+            hr_zone_max_bpm: None,
             training_load: None,
             source: "intervals".into(),
         };
@@ -915,8 +920,72 @@ mod tests {
             distance_meters: None,
             avg_speed_mps: None,
             hr_zone_seconds: None,
+            hr_zone_max_bpm: None,
             training_load: None,
             source: "intervals".into(),
+        }
+    }
+
+    #[test]
+    fn workout_round_trips_hr_zone_max_bpm() {
+        let db = test_db();
+        let walk = Workout {
+            hr_zone_max_bpm: Some(vec![123, 137, 143, 153, 157, 162, 170]),
+            ..workout_at("w-walk", "2026-10-15T07:00:00")
+        };
+        let run = Workout {
+            hr_zone_max_bpm: Some(vec![120, 140, 160]),
+            ..workout_at("w-run", "2026-10-14T07:00:00")
+        };
+        upsert_workout(&db, &walk).unwrap();
+        upsert_workout(&db, &run).unwrap();
+        upsert_workout(&db, &workout_at("w-lift", "2026-10-13T18:00:00")).unwrap();
+
+        let got = query_workouts(&db, &range("2026-10-13", "2026-10-15")).unwrap();
+
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].id, "w-walk");
+        assert_eq!(
+            got[0].hr_zone_max_bpm,
+            Some(vec![123, 137, 143, 153, 157, 162, 170])
+        );
+        assert_eq!(got[1].id, "w-run");
+        assert_eq!(got[1].hr_zone_max_bpm, Some(vec![120, 140, 160]));
+        assert_eq!(got[2].id, "w-lift");
+        assert_eq!(got[2].hr_zone_max_bpm, None);
+
+        // The stored text is what the v12 migration's backfill also writes.
+        let stored: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT hr_zone_max_bpm FROM workouts WHERE id = 'w-walk'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("[123,137,143,153,157,162,170]"));
+    }
+
+    #[test]
+    fn query_workouts_reads_an_undecodable_limit_value_as_none() {
+        for bad in ["'not json'", "'[100,2147483648]'"] {
+            let db = test_db();
+            let walk = Workout {
+                hr_zone_max_bpm: Some(vec![123, 137, 143]),
+                ..workout_at("w-walk", "2026-10-15T07:00:00")
+            };
+            upsert_workout(&db, &walk).unwrap();
+            db.conn()
+                .execute(
+                    &format!("UPDATE workouts SET hr_zone_max_bpm = {bad} WHERE id = 'w-walk'"),
+                    [],
+                )
+                .unwrap();
+
+            let got = query_workouts(&db, &range("2026-10-15", "2026-10-15")).unwrap();
+
+            assert_eq!(got.len(), 1, "{bad}");
+            assert_eq!(got[0].hr_zone_max_bpm, None, "{bad}");
         }
     }
 

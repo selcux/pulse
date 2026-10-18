@@ -369,7 +369,15 @@ pub const WORKOUT_COLUMNS: &[Column<Workout>] = &[
         opt_str(
             w.hr_zone_seconds
                 .as_deref()
-                .and_then(format_hr_zones)
+                .and_then(|seconds| format_hr_zones(seconds, None))
+                .as_deref(),
+        )
+    }),
+    Column::left("hr_zone_max_bpm", "Zone max bpm", 12, |w| {
+        opt_str(
+            w.hr_zone_max_bpm
+                .as_deref()
+                .and_then(format_zone_max_bpm)
                 .as_deref(),
         )
     }),
@@ -465,9 +473,12 @@ pub fn pace_per_km(speed_mps: Option<f64>) -> Option<String> {
 const ZONE_SEPARATOR: &str = " \u{b7} ";
 
 /// Heart rate zone times as `Z1 8m · Z2 2m · Z5 <1m`: every zone with time, lowest first,
-/// numbered from 1, as `format_duration`, or `<1m` under a minute. A zone with no time (0 or
-/// less) is left out; `None` when no zone has time.
-pub fn format_hr_zones(seconds: &[i64]) -> Option<String> {
+/// numbered from 1, as `format_duration`, or `<1m` under a minute. With `max_bpm` of the same
+/// length, each zone also shows its top: `Z1 ≤123: 8m`. Limits of another length are ignored,
+/// because they cannot be paired with the times by position. A zone with no time (0 or less)
+/// is left out; `None` when no zone has time.
+pub fn format_hr_zones(seconds: &[i64], max_bpm: Option<&[i32]>) -> Option<String> {
+    let tops = max_bpm.filter(|tops| tops.len() == seconds.len());
     let zones: Vec<String> = seconds
         .iter()
         .enumerate()
@@ -478,10 +489,24 @@ pub fn format_hr_zones(seconds: &[i64]) -> Option<String> {
             } else {
                 format_duration(*s)
             };
-            format!("Z{} {time}", i + 1)
+            match tops {
+                Some(tops) => format!("Z{} \u{2264}{}: {time}", i + 1, tops[i]),
+                None => format!("Z{} {time}", i + 1),
+            }
         })
         .collect();
     (!zones.is_empty()).then(|| zones.join(ZONE_SEPARATOR))
+}
+
+/// Zone tops as `123/137/143`, lowest zone first; `None` for an empty list.
+fn format_zone_max_bpm(max_bpm: &[i32]) -> Option<String> {
+    (!max_bpm.is_empty()).then(|| {
+        max_bpm
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join("/")
+    })
 }
 
 #[cfg(test)]
@@ -626,22 +651,67 @@ mod tests {
     #[test]
     fn format_hr_zones_lists_zones_with_time() {
         assert_eq!(
-            format_hr_zones(&[491, 158, 150, 110, 28, 0, 0]).as_deref(),
+            format_hr_zones(&[491, 158, 150, 110, 28, 0, 0], None).as_deref(),
             Some("Z1 8m \u{b7} Z2 2m \u{b7} Z3 2m \u{b7} Z4 1m \u{b7} Z5 <1m")
         );
         assert_eq!(
-            format_hr_zones(&[0, 0, 3700, 0, 65]).as_deref(),
+            format_hr_zones(&[0, 0, 3700, 0, 65], None).as_deref(),
             Some("Z3 1h 01m \u{b7} Z5 1m")
         );
-        assert_eq!(format_hr_zones(&[59]).as_deref(), Some("Z1 <1m"));
-        assert_eq!(format_hr_zones(&[60]).as_deref(), Some("Z1 1m"));
+        assert_eq!(format_hr_zones(&[59], None).as_deref(), Some("Z1 <1m"));
+        assert_eq!(format_hr_zones(&[60], None).as_deref(), Some("Z1 1m"));
     }
 
     #[test]
     fn format_hr_zones_is_none_without_zone_time() {
         for seconds in [&[][..], &[0, 0, 0], &[-5, 0]] {
-            assert_eq!(format_hr_zones(seconds), None, "{seconds:?}");
+            assert_eq!(format_hr_zones(seconds, None), None, "{seconds:?}");
+            assert_eq!(
+                format_hr_zones(seconds, Some(&[120, 140, 160][..])),
+                None,
+                "{seconds:?}"
+            );
         }
+    }
+
+    #[test]
+    fn format_hr_zones_labels_each_zone_with_its_top() {
+        assert_eq!(
+            format_hr_zones(
+                &[491, 158, 150, 110, 28, 0, 0],
+                Some(&[123, 137, 143, 153, 157, 162, 170])
+            )
+            .as_deref(),
+            Some(
+                "Z1 \u{2264}123: 8m \u{b7} Z2 \u{2264}137: 2m \u{b7} Z3 \u{2264}143: 2m \u{b7} Z4 \u{2264}153: 1m \u{b7} Z5 \u{2264}157: <1m"
+            )
+        );
+        assert_eq!(
+            format_hr_zones(&[0, 0, 3700, 0, 65], Some(&[120, 140, 160, 175, 190])).as_deref(),
+            Some("Z3 \u{2264}160: 1h 01m \u{b7} Z5 \u{2264}190: 1m")
+        );
+    }
+
+    #[test]
+    fn format_hr_zones_ignores_limits_of_another_length() {
+        let seconds = [491, 158, 0];
+        for tops in [&[123, 137][..], &[], &[123, 137, 143, 153]] {
+            assert_eq!(
+                format_hr_zones(&seconds, Some(tops)).as_deref(),
+                Some("Z1 8m \u{b7} Z2 2m"),
+                "{tops:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_zone_max_bpm_joins_the_tops() {
+        assert_eq!(
+            format_zone_max_bpm(&[123, 137, 143, 153, 157, 162, 170]).as_deref(),
+            Some("123/137/143/153/157/162/170")
+        );
+        assert_eq!(format_zone_max_bpm(&[1]).as_deref(), Some("1"));
+        assert_eq!(format_zone_max_bpm(&[]), None);
     }
 
     fn sleep_rows() -> Vec<Sleep> {
@@ -834,6 +904,7 @@ mod tests {
                     distance_meters: None,
                     avg_speed_mps: None,
                     hr_zone_seconds: Some(vec![2400, 900, 450, 150, 0, 0, 0]),
+                    hr_zone_max_bpm: Some(vec![123, 137, 143, 153, 157, 162, 170]),
                     training_load: Some(48),
                     source: "intervals".into(),
                 },
@@ -871,6 +942,7 @@ mod tests {
                     distance_meters: Some(5220.0),
                     avg_speed_mps: Some(2.9),
                     hr_zone_seconds: None,
+                    hr_zone_max_bpm: None,
                     training_load: None,
                     source: "intervals".into(),
                 },
@@ -1068,10 +1140,10 @@ mod tests {
         assert_eq!(
             workout_log_wide(&workout_log()),
             lines(&[
-                "ID   │ Name       │ Start               │ Duration │ Type           │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones                        │ Load │ Source",
-                "─────┼────────────┼─────────────────────┼──────────┼────────────────┼──────┼────────┼────────┼─────────┼──────────┼─────────────────────────────────┼──────┼──────────",
-                "i101 │ Upper Body │ 2026-01-02T07:30:00 │   1h 05m │ WeightTraining │  320 │    112 │    151 │       - │        - │ Z1 40m · Z2 15m · Z3 7m · Z4 2m │   48 │ intervals",
-                "i100 │ -          │ 2026-01-01T18:00:00 │      30m │ Run            │    - │      - │      - │    5.22 │     5:45 │ -                               │    - │ intervals",
+                "ID   │ Name       │ Start               │ Duration │ Type           │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones                        │ Zone max bpm                │ Load │ Source",
+                "─────┼────────────┼─────────────────────┼──────────┼────────────────┼──────┼────────┼────────┼─────────┼──────────┼─────────────────────────────────┼─────────────────────────────┼──────┼──────────",
+                "i101 │ Upper Body │ 2026-01-02T07:30:00 │   1h 05m │ WeightTraining │  320 │    112 │    151 │       - │        - │ Z1 40m · Z2 15m · Z3 7m · Z4 2m │ 123/137/143/153/157/162/170 │   48 │ intervals",
+                "i100 │ -          │ 2026-01-01T18:00:00 │      30m │ Run            │    - │      - │      - │    5.22 │     5:45 │ -                               │ -                           │    - │ intervals",
                 "",
                 "Workout │ Set │ Category    │ Exercise            │ Reps │ Weight",
                 "────────┼─────┼─────────────┼─────────────────────┼──────┼───────",
@@ -1088,9 +1160,9 @@ mod tests {
         assert_eq!(
             workout_log_wide(&log),
             lines(&[
-                "ID   │ Name │ Start               │ Duration │ Type │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones │ Load │ Source",
-                "─────┼──────┼─────────────────────┼──────────┼──────┼──────┼────────┼────────┼─────────┼──────────┼──────────┼──────┼──────────",
-                "i100 │ -    │ 2026-01-01T18:00:00 │      30m │ Run  │    - │      - │      - │    5.22 │     5:45 │ -        │    - │ intervals",
+                "ID   │ Name │ Start               │ Duration │ Type │ kcal │ Avg HR │ Max HR │ Dist km │ Pace /km │ HR zones │ Zone max bpm │ Load │ Source",
+                "─────┼──────┼─────────────────────┼──────────┼──────┼──────┼────────┼────────┼─────────┼──────────┼──────────┼──────────────┼──────┼──────────",
+                "i100 │ -    │ 2026-01-01T18:00:00 │      30m │ Run  │    - │      - │      - │    5.22 │     5:45 │ -        │ -            │    - │ intervals",
             ])
         );
     }

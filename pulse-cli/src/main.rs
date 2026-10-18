@@ -540,10 +540,12 @@ fn format_workout_line(w: &Workout) -> String {
     format!("[{}] {} ({})", w.start_time, label, parts.join(", "))
 }
 
-/// The log line under a workout with heart rate zone times: `  HR zones: Z1 8m · Z2 2m`.
-/// `None` when no zone has time, so no line is printed.
+/// The log line under a workout with heart rate zone times: `  HR zones: Z1 ≤123: 8m · Z2 ≤137: 2m`,
+/// without the tops when the workout has none or a different number of them. `None` when no zone
+/// has time, so no line is printed.
 fn format_zone_line(w: &Workout) -> Option<String> {
-    let zones = table::format_hr_zones(w.hr_zone_seconds.as_deref()?)?;
+    let zones =
+        table::format_hr_zones(w.hr_zone_seconds.as_deref()?, w.hr_zone_max_bpm.as_deref())?;
     Some(format!("  HR zones: {zones}"))
 }
 
@@ -798,6 +800,7 @@ mod tests {
             distance_meters: distance,
             avg_speed_mps: speed,
             hr_zone_seconds: None,
+            hr_zone_max_bpm: None,
             training_load: None,
             source: "intervals".into(),
         }
@@ -819,10 +822,43 @@ mod tests {
     }
 
     #[test]
+    fn zone_line_labels_each_zone_with_its_top() {
+        let w = Workout {
+            hr_zone_seconds: Some(vec![491, 158, 150, 110, 28, 0, 0]),
+            hr_zone_max_bpm: Some(vec![123, 137, 143, 153, 157, 162, 170]),
+            ..workout(None, None)
+        };
+        assert_eq!(
+            format_zone_line(&w),
+            Some(
+                "  HR zones: Z1 \u{2264}123: 8m \u{b7} Z2 \u{2264}137: 2m \u{b7} Z3 \u{2264}143: 2m \u{b7} Z4 \u{2264}153: 1m \u{b7} Z5 \u{2264}157: <1m"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn zone_line_leaves_the_tops_out_when_the_lengths_differ() {
+        let w = Workout {
+            hr_zone_seconds: Some(vec![491, 158, 150, 110, 28, 0, 0]),
+            hr_zone_max_bpm: Some(vec![123, 137, 143, 153, 157]),
+            ..workout(None, None)
+        };
+        assert_eq!(
+            format_zone_line(&w),
+            Some(
+                "  HR zones: Z1 8m \u{b7} Z2 2m \u{b7} Z3 2m \u{b7} Z4 1m \u{b7} Z5 <1m"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
     fn zone_line_is_none_without_zone_time() {
         for zones in [None, Some(vec![]), Some(vec![0, 0, 0])] {
             let w = Workout {
                 hr_zone_seconds: zones.clone(),
+                hr_zone_max_bpm: Some(vec![123, 137, 143]),
                 ..workout(None, None)
             };
             assert_eq!(format_zone_line(&w), None, "{zones:?}");

@@ -97,6 +97,16 @@ pulse sync intervals --from 2026-01-01
 
 The zone times add up to the time with a heart rate reading, so their sum can differ from the workout's duration by a minute or two. A workout recorded without heart rate shows no zones.
 
+### Heart rate zone limits
+
+Since 0.13.0, pulse also stores the top of each heart rate zone, in bpm, as Intervals.icu set it for each workout, and `pulse workouts` puts it in front of the zone time (`HR zones: Z1 ≤123: 8m · Z2 ≤137: 2m · …`). Intervals.icu records the zones when it analyses an activity, so after you change your zones, workouts from the same weeks can carry different limits; the labels show which limits each workout's times were counted against. When 0.13.0 first opens your database, it fills the limits for every workout synced since 0.5.0, from the stored Intervals.icu responses. Older workouts stay empty until you sync them once:
+
+```bash
+pulse sync intervals --from 2026-01-01
+```
+
+The limits only label the times; pulse does not recount them. To count an older workout against your current zones, re-analyse it in Intervals.icu, then sync that day again. A workout whose number of limits differs from its number of zone times shows its times without limits.
+
 ### Training load
 
 Since 0.11.0, pulse stores each workout's training load as Intervals.icu computed it, and `pulse workouts` shows it at the end of the workout line (`load 43`). Intervals.icu works it out from power, heart rate or pace, so a workout recorded without any of them has no load. When 0.11.0 first opens your database, it fills the load for every workout synced since 0.5.0, from the stored Intervals.icu responses. Older workouts stay empty until you sync them once:

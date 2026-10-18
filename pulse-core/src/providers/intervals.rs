@@ -45,6 +45,10 @@ struct ApiActivity {
     /// Intervals.icu. Kept as raw JSON so an unexpected shape costs only the zone times, not the
     /// whole activity; `hr_zone_seconds` decides what counts.
     icu_hr_zone_times: Option<serde_json::Value>,
+    /// Top of each heart rate zone in bpm, lowest first, as Intervals.icu set them when it
+    /// analysed the activity. Kept as raw JSON so an unexpected shape costs only the limits, not
+    /// the whole activity; `hr_zone_max_bpm` decides what counts.
+    icu_hr_zones: Option<serde_json::Value>,
     /// Garmin Connect activity ID — used to fetch exercise sets.
     external_id: Option<String>,
 }
@@ -255,6 +259,23 @@ fn hr_zone_seconds(times: Option<&serde_json::Value>) -> Option<Vec<i64>> {
     seconds.iter().any(|s| *s > 0).then_some(seconds)
 }
 
+/// Zone limits from the body's `icu_hr_zones`: `Some` only for a non-empty array of JSON
+/// integers from 1 to `i32::MAX`, each above the one before. Missing, null, empty, not rising
+/// or any other shape is `None`. The v12 migration repeats this rule in SQL;
+/// `migration_v12_backfill_matches_the_rust_mapping` pins the two together.
+fn hr_zone_max_bpm(tops: Option<&serde_json::Value>) -> Option<Vec<i32>> {
+    let tops = tops?
+        .as_array()?
+        .iter()
+        .map(|top| {
+            top.as_i64()
+                .and_then(|bpm| i32::try_from(bpm).ok())
+                .filter(|bpm| *bpm > 0)
+        })
+        .collect::<Option<Vec<i32>>>()?;
+    (!tops.is_empty() && tops.windows(2).all(|pair| pair[0] < pair[1])).then_some(tops)
+}
+
 /// Training load from the body's `icu_training_load` in whole points: truncated toward zero and
 /// kept only from 1 to `i32::MAX`. Missing, null, below 1 (0 means no load computed) or beyond
 /// `i32::MAX` is `None`. The v10 migration repeats this rule in SQL;
@@ -416,6 +437,7 @@ impl IntervalsProvider {
             distance_meters: api.distance.filter(|d| *d > 0.0),
             avg_speed_mps: api.average_speed.filter(|s| *s > 0.0),
             hr_zone_seconds: hr_zone_seconds(api.icu_hr_zone_times.as_ref()),
+            hr_zone_max_bpm: hr_zone_max_bpm(api.icu_hr_zones.as_ref()),
             training_load: training_load(api.icu_training_load),
             source: "intervals".into(),
         }
@@ -695,6 +717,7 @@ mod tests {
             distance: None,
             average_speed: None,
             icu_hr_zone_times: None,
+            icu_hr_zones: None,
             external_id: Some("22005844470".into()),
         };
         let w = IntervalsProvider::map_workout(&api);
@@ -706,6 +729,7 @@ mod tests {
         assert_eq!(w.distance_meters, None);
         assert_eq!(w.avg_speed_mps, None);
         assert_eq!(w.hr_zone_seconds, None);
+        assert_eq!(w.hr_zone_max_bpm, None);
         assert_eq!(w.training_load, Some(45), "45.2 is truncated");
         assert_eq!(w.source, "intervals");
     }
@@ -725,6 +749,7 @@ mod tests {
             distance,
             average_speed,
             icu_hr_zone_times: None,
+            icu_hr_zones: None,
             external_id: None,
         }
     }
@@ -920,8 +945,8 @@ mod tests {
     }
 
     const ACTIVITIES_BODY: &str = r#"[
-  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"icu_training_load":52,"external_id":"22005844470","icu_hr_zone_times":[1500,1200,600,300,0],"icu_ftp":1.50},
-  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "icu_hr_zone_times": [0, 0, 0], "average_speed": 2.9, "distance": 5012.5}
+  {"id":"i101","name":"Push","start_date_local":"2026-03-01T08:00:00","moving_time":3600,"type":"WeightTraining","calories":350,"average_heartrate":120,"max_heartrate":155,"icu_training_load":52,"external_id":"22005844470","icu_hr_zone_times":[1500,1200,600,300,0],"icu_hr_zones":[130,145,160,172,185],"icu_ftp":1.50},
+  {"id": "i102", "start_date_local": "2026-03-02T07:00:00", "type": "Run", "icu_hr_zone_times": [0, 0, 0], "icu_hr_zones": [120, 140, 160], "average_speed": 2.9, "distance": 5012.5}
 ]"#;
     const SETS_BODY: &str = r#"{"exerciseSets":[{"exercises":[{"category":"BENCH_PRESS","name":"BARBELL_BENCH_PRESS"}],"repetitionCount":10,"weight":60000.0,"setType":"ACTIVE"},{"exercises":[],"setType":"REST"}]}"#;
 
@@ -1280,6 +1305,21 @@ mod tests {
         };
         assert_eq!(zones("i101").as_deref(), Some("[1500,1200,600,300,0]"));
         assert_eq!(zones("i102"), None, "all zeros are no zone time");
+        let limits = |id: &str| -> Option<String> {
+            db.conn()
+                .query_row(
+                    "SELECT hr_zone_max_bpm FROM workouts WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(limits("i101").as_deref(), Some("[130,145,160,172,185]"));
+        assert_eq!(
+            limits("i102").as_deref(),
+            Some("[120,140,160]"),
+            "stored even though the zone times are all zero"
+        );
         let load = |id: &str| -> Option<i32> {
             db.conn()
                 .query_row(
@@ -1481,6 +1521,140 @@ mod tests {
             r#"{"id":"i1","start_date_local":"2026-10-15T07:00:00","icu_hr_zone_times":null}"#,
         ] {
             assert_eq!(parse_activity(body).unwrap().icu_hr_zone_times, None);
+        }
+    }
+
+    /// The v12 migration repeats `hr_zone_max_bpm`'s rule in SQL. Both must store the same text
+    /// for the same stored body, malformed ones included.
+    #[test]
+    fn migration_v12_backfill_matches_the_rust_mapping() {
+        let bodies = [
+            ("i601", r#""icu_hr_zones":[123,137,143,153,157,162,170]"#),
+            ("i602", r#""icu_hr_zones": [ 120 , 140 , 160 ]"#),
+            ("i603", ""),
+            ("i604", r#""icu_hr_zones":null"#),
+            ("i605", r#""icu_hr_zones":[]"#),
+            ("i606", r#""icu_hr_zones":[123.0,137]"#),
+            ("i607", r#""icu_hr_zones":[123,null,143]"#),
+            ("i608", r#""icu_hr_zones":[0,137]"#),
+            ("i609", r#""icu_hr_zones":[-5,137]"#),
+            ("i610", r#""icu_hr_zones":[137,123]"#),
+            ("i611", r#""icu_hr_zones":[123,123,143]"#),
+            ("i612", r#""icu_hr_zones":"123,137""#),
+            ("i613", r#""icu_hr_zones":{"z1":123}"#),
+            ("i614", r#""icu_hr_zones":[true,137]"#),
+            ("i615", r#""icu_hr_zones":["123",137]"#),
+            ("i616", r#""icu_hr_zones":[[123],137]"#),
+            ("i617", r#""icu_hr_zones":[2147483647]"#),
+            ("i618", r#""icu_hr_zones":[100,2147483648]"#),
+            ("i619", r#""icu_hr_zones":[9223372036854775808]"#),
+            ("i620", r#""icu_hr_zones":[1e2,137]"#),
+            ("i621", r#""icu_hr_zones":[1]"#),
+            ("i622", r#""icu_hr_zones":[150,140,160]"#),
+        ];
+        let db = Database::open_memory().unwrap();
+        let mut mapped = Vec::new();
+        for (id, field) in bodies {
+            let separator = if field.is_empty() { "" } else { "," };
+            let body = format!(
+                r#"{{"id":"{id}","start_date_local":"2026-10-15T07:00:00","type":"Walk"{separator}{field}}}"#
+            );
+            let w = IntervalsProvider::map_workout(&parse_activity(&body).unwrap());
+            queries::upsert_raw_response(&db, PROVIDER, ACTIVITY_ENDPOINT, &w.id, &body).unwrap();
+            // A stale value the migration must overwrite either way.
+            let before = Workout {
+                hr_zone_max_bpm: Some(vec![9, 9, 9]),
+                ..w.clone()
+            };
+            queries::upsert_workout(&db, &before).unwrap();
+            mapped.push(w);
+        }
+
+        crate::db::migrations::migrate_v12(&db).unwrap();
+
+        for w in &mapped {
+            let stored: Option<String> = db
+                .conn()
+                .query_row(
+                    "SELECT hr_zone_max_bpm FROM workouts WHERE id = ?1",
+                    [&w.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let expected = w
+                .hr_zone_max_bpm
+                .as_ref()
+                .map(|z| serde_json::to_string(z).unwrap());
+            assert_eq!(stored, expected, "{}", w.id);
+        }
+        // Not vacuous: only these bodies map to a value.
+        for w in &mapped {
+            let expected = match w.id.as_str() {
+                "i601" => Some(vec![123, 137, 143, 153, 157, 162, 170]),
+                "i602" => Some(vec![120, 140, 160]),
+                "i617" => Some(vec![i32::MAX]),
+                "i621" => Some(vec![1]),
+                _ => None,
+            };
+            assert_eq!(w.hr_zone_max_bpm, expected, "{}", w.id);
+        }
+    }
+
+    #[test]
+    fn hr_zone_max_bpm_keeps_only_rising_arrays_of_positive_i32() {
+        use serde_json::json;
+        for (value, expected) in [
+            (
+                json!([123, 137, 143, 153, 157, 162, 170]),
+                vec![123, 137, 143, 153, 157, 162, 170],
+            ),
+            (json!([120, 140, 160]), vec![120, 140, 160]),
+            (json!([1]), vec![1]),
+            (json!([i32::MAX]), vec![i32::MAX]),
+        ] {
+            assert_eq!(hr_zone_max_bpm(Some(&value)), Some(expected), "{value}");
+        }
+        for value in [
+            json!(null),
+            json!([]),
+            json!([0, 137]),
+            json!([-5, 137]),
+            json!([137, 123]),
+            json!([123, 123, 143]),
+            json!([150, 140, 160]),
+            json!([123.0, 137]),
+            json!([123, null, 143]),
+            json!([true, 137]),
+            json!(["123", 137]),
+            json!([[123], 137]),
+            json!("123,137"),
+            json!({"z1": 123}),
+            json!([2_147_483_648_i64]),
+            json!([u64::MAX]),
+        ] {
+            assert_eq!(hr_zone_max_bpm(Some(&value)), None, "{value}");
+        }
+        assert_eq!(hr_zone_max_bpm(None), None);
+    }
+
+    #[test]
+    fn parse_activity_keeps_the_activity_when_zone_limits_are_malformed() {
+        for tops in [r#""oops""#, r#"{"z1":123}"#] {
+            let body = format!(
+                r#"{{"id":"i1","start_date_local":"2026-10-15T07:00:00","icu_hr_zones":{tops}}}"#
+            );
+            let api = parse_activity(&body).unwrap();
+            assert_eq!(
+                IntervalsProvider::map_workout(&api).hr_zone_max_bpm,
+                None,
+                "{tops}"
+            );
+        }
+        for body in [
+            r#"{"id":"i1","start_date_local":"2026-10-15T07:00:00"}"#,
+            r#"{"id":"i1","start_date_local":"2026-10-15T07:00:00","icu_hr_zones":null}"#,
+        ] {
+            assert_eq!(parse_activity(body).unwrap().icu_hr_zones, None);
         }
     }
 

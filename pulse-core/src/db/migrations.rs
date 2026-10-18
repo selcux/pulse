@@ -10,7 +10,7 @@ use super::Database;
 
 /// The schema version this build expects. Migrations up to this version are
 /// applied automatically when the database is opened.
-const CURRENT_VERSION: i32 = 11;
+const CURRENT_VERSION: i32 = 12;
 
 /// Apply all pending schema migrations up to `CURRENT_VERSION`.
 ///
@@ -90,6 +90,10 @@ pub fn run(db: &Database) -> Result<()> {
         migrate_v11(db)?;
     }
 
+    if version < 12 {
+        migrate_v12(db)?;
+    }
+
     // Stamp the version after all migrations succeed.
     set_version(db, CURRENT_VERSION)?;
 
@@ -113,6 +117,47 @@ fn set_version(db: &Database, version: i32) -> Result<()> {
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('schema_version', ?1, datetime('now'))",
         rusqlite::params![version.to_string()],
     )?;
+    Ok(())
+}
+
+/// Columns added by v12, as `(table, column, SQL type)`.
+const V12_COLUMNS: [(&str, &str, &str); 1] = [("workouts", "hr_zone_max_bpm", "TEXT")];
+
+/// Fills `workouts.hr_zone_max_bpm` from stored Intervals.icu activity bodies. Must store exactly
+/// what `IntervalsProvider::map_workout` stores for the same body: the `icu_hr_zones` array as
+/// minified JSON text when it is not empty, every element is a JSON integer from 1 to i32::MAX,
+/// and each element is above the one before (the self-join on `key + 1`); otherwise NULL. The
+/// upper bound also rejects an integer beyond i64, which `json_each` returns as REAL.
+/// `migration_v12_backfill_matches_the_rust_mapping` pins that. Only rows with a stored body
+/// are written; no row is inserted.
+const V12_BACKFILL: &str = "
+    UPDATE workouts SET
+        hr_zone_max_bpm = CASE
+            WHEN json_type(r.body, '$.icu_hr_zones') = 'array'
+             AND json_array_length(r.body, '$.icu_hr_zones') > 0
+             AND NOT EXISTS (SELECT 1 FROM json_each(r.body, '$.icu_hr_zones') AS z
+                             WHERE z.type <> 'integer' OR z.value NOT BETWEEN 1 AND 2147483647)
+             AND NOT EXISTS (SELECT 1 FROM json_each(r.body, '$.icu_hr_zones') AS a
+                             JOIN json_each(r.body, '$.icu_hr_zones') AS b ON b.key = a.key + 1
+                             WHERE b.value <= a.value)
+            THEN json_extract(r.body, '$.icu_hr_zones') END
+    FROM raw_responses AS r
+    WHERE r.provider = 'intervals' AND r.endpoint = 'activity' AND r.key = workouts.id;
+";
+
+/// Adds `workouts.hr_zone_max_bpm` (issue #23) and fills it for every workout whose
+/// Intervals.icu body is stored in `raw_responses`. Workouts without one (synced before 0.5.0,
+/// or with raw storage off) stay NULL until synced again.
+///
+/// One transaction, safe to run again for the same reason as `migrate_v7`.
+pub(crate) fn migrate_v12(db: &Database) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    for (table, column, decl) in V12_COLUMNS {
+        add_column_if_missing(&tx, table, column, decl)?;
+    }
+    tx.execute_batch(V12_BACKFILL)
+        .context("Failed to run v12 migration")?;
+    tx.commit().context("Failed to commit v12 migration")?;
     Ok(())
 }
 
@@ -603,7 +648,7 @@ mod tests {
     #[test]
     fn fresh_database_is_at_current_version() {
         let db = Database::open_memory().unwrap();
-        assert_eq!(CURRENT_VERSION, 11);
+        assert_eq!(CURRENT_VERSION, 12);
         assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
     }
 
@@ -1541,5 +1586,159 @@ mod tests {
             .unwrap();
         migrate_v11(&db).unwrap();
         assert_eq!(count(&db, "wellness"), 1);
+    }
+
+    /// A database as pulse 0.12 left it: schema version 11, workouts without `hr_zone_max_bpm`,
+    /// and stored Intervals.icu activity bodies with zone limits for some of them.
+    fn v11_db_with_limit_bodies() -> Database {
+        let db = v10_db();
+        migrate_v11(&db).unwrap();
+        set_version(&db, 11).unwrap();
+        db.conn()
+            .execute_batch(
+                r#"INSERT INTO workouts (id, start_time, duration_seconds, activity_type) VALUES
+                 ('i231', '2026-10-20T07:00:00', 3540, 'Walk'),
+                 ('i232', '2026-10-20T18:00:00', 3600, 'WeightTraining'),
+                 ('i233', '2026-10-21T07:00:00', 1800, 'Run'),
+                 ('i234', '2026-10-21T09:00:00', 1200, 'Walk'),
+                 ('i235', '2026-10-21T10:00:00', 600, 'Walk'),
+                 ('i236', '2026-10-21T11:00:00', 600, 'Walk'),
+                 ('i238', '2026-10-21T12:00:00', 600, 'Walk');
+                 INSERT INTO raw_responses (provider, endpoint, key, body) VALUES
+                 ('intervals', 'activity', 'i231', '{"id":"i231","type":"Walk","icu_hr_zone_times":[491,158,150,110,28,0,0],"icu_hr_zones":[123,137,143,153,157,162,170]}'),
+                 ('intervals', 'activity', 'i232', '{"id":"i232","type":"WeightTraining","icu_hr_zones":[]}'),
+                 ('intervals', 'activity', 'i233', '{"id":"i233","type":"Run","icu_hr_zones": [ 120 , 140 , 160 ]}'),
+                 ('intervals', 'activity', 'i234', '{"id":"i234","type":"Walk","icu_hr_zones":[123,null,143]}'),
+                 ('intervals', 'activity', 'i235', '{"id":"i235","type":"Walk","icu_hr_zones":[137,123]}'),
+                 ('intervals', 'activity', 'i238', '{"id":"i238","type":"Walk","icu_hr_zones":[100,2147483648]}'),
+                 ('intervals', 'activity', 'i237', '{"id":"i237","type":"Walk","icu_hr_zones":[1,2,3]}'),
+                 ('garmin', 'activity', 'i236', '{"icu_hr_zones":[1,2,3]}');"#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// The stored `hr_zone_max_bpm` text of one workout.
+    fn limit_text(db: &Database, id: &str) -> Option<String> {
+        db.conn()
+            .query_row(
+                "SELECT hr_zone_max_bpm FROM workouts WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn v12_adds_the_zone_limit_column() {
+        let db = v11_db_with_limit_bodies();
+        migrate_v12(&db).unwrap();
+
+        assert_eq!(
+            columns_of(&db, "workouts"),
+            pairs(&[
+                ("id", "TEXT"),
+                ("start_time", "TEXT"),
+                ("duration_seconds", "INTEGER"),
+                ("activity_type", "TEXT"),
+                ("calories", "INTEGER"),
+                ("avg_hr", "INTEGER"),
+                ("max_hr", "INTEGER"),
+                ("source", "TEXT"),
+                ("name", "TEXT"),
+                ("distance_meters", "REAL"),
+                ("avg_speed_mps", "REAL"),
+                ("hr_zone_seconds", "TEXT"),
+                ("training_load", "INTEGER"),
+                ("hr_zone_max_bpm", "TEXT"),
+            ])
+        );
+    }
+
+    /// Asserts the values the fixture's bodies produce, and that the other rows stayed empty.
+    fn assert_v12_backfilled(db: &Database) {
+        assert_eq!(
+            limit_text(db, "i231").as_deref(),
+            Some("[123,137,143,153,157,162,170]"),
+            "a stored array is copied"
+        );
+        assert_eq!(
+            limit_text(db, "i211").as_deref(),
+            Some("[129,137,145,153,157,162,170]"),
+            "an older workout gets its limits too"
+        );
+        assert_eq!(
+            limit_text(db, "i233").as_deref(),
+            Some("[120,140,160]"),
+            "three zones; whitespace dropped"
+        );
+        assert_eq!(limit_text(db, "i232"), None, "empty");
+        assert_eq!(
+            limit_text(db, "i234"),
+            None,
+            "a null element voids the list"
+        );
+        assert_eq!(limit_text(db, "i235"), None, "not rising");
+        assert_eq!(limit_text(db, "i238"), None, "beyond i32");
+        assert_eq!(
+            limit_text(db, "i236"),
+            None,
+            "the decoy under another provider was not used"
+        );
+        assert_eq!(limit_text(db, "i201"), None, "a body without the field");
+        assert_eq!(limit_text(db, "w1"), None);
+
+        // No row was inserted for the body that has no workout.
+        assert_eq!(count(db, "workouts"), 25);
+
+        // The earlier columns are untouched.
+        assert_eq!(zone_text(db, "i231"), None, "v12 fills only its own column");
+        assert_eq!(
+            zone_text(db, "i211").as_deref(),
+            Some("[491,158,150,110,28,0,0]"),
+            "the v9 column keeps its value"
+        );
+        assert_eq!(
+            load_of(db, "i221"),
+            Some(43),
+            "the v10 column keeps its value"
+        );
+        assert_eq!(
+            workout_extras(db, "i201"),
+            (Some(5043.21), Some(1.417)),
+            "the v8 columns keep their values"
+        );
+        assert_eq!(set_rows(db), empty_labels_converted());
+    }
+
+    #[test]
+    fn v12_fills_workouts_that_have_a_stored_body() {
+        let db = v11_db_with_limit_bodies();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        assert_v12_backfilled(&db);
+    }
+
+    #[test]
+    fn v12_runs_with_no_stored_bodies() {
+        let db = v11_db_with_limit_bodies();
+        db.conn().execute("DELETE FROM raw_responses", []).unwrap();
+        run(&db).unwrap();
+        assert_eq!(current_version(&db).unwrap(), CURRENT_VERSION);
+        let filled: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(hr_zone_max_bpm) FROM workouts", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(filled, 0);
+    }
+
+    #[test]
+    fn v12_can_run_twice() {
+        let db = v11_db_with_limit_bodies();
+        migrate_v12(&db).unwrap();
+        migrate_v12(&db).unwrap();
+        assert_v12_backfilled(&db);
     }
 }
