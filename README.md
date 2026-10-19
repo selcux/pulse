@@ -1,5 +1,8 @@
 # Pulse
 
+[![CI](https://github.com/selcux/pulse/actions/workflows/ci.yml/badge.svg)](https://github.com/selcux/pulse/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/pulse-cli.svg)](https://crates.io/crates/pulse-cli)
+
 Pulse is a unified health data aggregator that pulls data from Garmin Connect and Intervals.icu into a local SQLite database, then surfaces actionable insights through a Rust CLI. It computes a daily **vitality score** — a weighted composite of sleep, recovery, activity, stress, and fitness — so you can track your long-term health trajectory without trusting a vendor dashboard.
 
 ## Features
@@ -15,7 +18,7 @@ Pulse is a unified health data aggregator that pulls data from Garmin Connect an
 ## Quick Start
 
 ```bash
-# 1. Install (puts `pulse` in ~/.cargo/bin)
+# 1. Install (puts `pulse` in ~/.cargo/bin); no Rust? grab a binary from GitHub Releases
 cargo install pulse-cli
 
 # 2. Initialise config (creates ~/.pulse/config.toml)

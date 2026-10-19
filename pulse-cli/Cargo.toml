@@ -24,3 +24,13 @@ rpassword = "7"
 [[bin]]
 name = "pulse"
 path = "src/main.rs"
+
+# `cargo binstall pulse-cli` downloads the binary from the GitHub Release instead of compiling.
+# Names match the archives that .github/workflows/release.yml builds.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+bin-dir = "pulse{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

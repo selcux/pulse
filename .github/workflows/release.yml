@@ -1,0 +1,193 @@
+# Release on a vX.Y.Z tag: run the CI gate, build binaries for four targets, publish both crates to
+# crates.io, then create the GitHub Release with the binaries attached.
+# Binaries build before the crates.io publish because a published version can never be reused:
+# a target that fails to compile must stop the release while nothing has shipped yet.
+# Run it by hand (workflow_dispatch) for a dry run: gate, binaries and `cargo publish --dry-run`, nothing shipped.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    uses: ./.github/workflows/ci.yml
+
+  verify:
+    name: tag matches version, commit on main
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - id: version
+        name: Tag matches Cargo.toml version
+        run: |
+          meta="$(cargo metadata --no-deps --format-version 1)"
+          version_of() { jq -r --arg c "$1" '.packages[] | select(.name == $c) | .version' <<<"$meta"; }
+          version="$(version_of pulse-cli)"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            for crate in pulse-health-core pulse-cli; do
+              crate_version="$(version_of "$crate")"
+              if [ "$crate_version" != "${GITHUB_REF_NAME#v}" ]; then
+                echo "::error::tag $GITHUB_REF_NAME does not match $crate version $crate_version"
+                exit 1
+              fi
+            done
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Tagged commit is on main
+        if: github.event_name == 'push'
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: [gate, verify]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            native: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            native: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            native: true
+          # Cross-compiled on the Apple Silicon runner: GitHub's Intel macOS runners are being retired.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            native: false
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - run: rustup target add "$TARGET"
+        shell: bash
+      - if: contains(matrix.target, 'linux-musl')
+        # musl-gcc builds the C parts (aws-lc-sys, bundled SQLite) into a fully static binary.
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p pulse-cli --target "$TARGET"
+        shell: bash
+      - if: matrix.native
+        name: Smoke test
+        run: '"./target/$TARGET/release/pulse" --version'
+        shell: bash
+      - name: Package
+        shell: bash
+        run: |
+          name="pulse-cli-$TARGET-v$VERSION"
+          mkdir -p "dist/$name"
+          cp README.md LICENSE "dist/$name/"
+          cd dist
+          if [[ "$TARGET" == *windows* ]]; then
+            cp "../target/$TARGET/release/pulse.exe" "$name/"
+            archive="$name.zip"
+            (cd "$name" && 7z a -tzip "../$archive" ./* > /dev/null)
+          else
+            cp "../target/$TARGET/release/pulse" "$name/"
+            archive="$name.tar.gz"
+            tar -czf "$archive" -C "$name" .
+          fi
+          # Archives hold the files at their root, as cargo-binstall's bin-dir expects.
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          rm -rf "$name"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-dry-run:
+    name: publish dry run
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      # pulse-cli's dry run resolves pulse-health-core from crates.io, so only core is checked here.
+      - run: cargo publish -p pulse-health-core --locked --dry-run
+
+  publish:
+    name: publish to crates.io
+    if: github.event_name == 'push'
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # crates.io Trusted Publishing: short-lived token, no stored secret
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish pulse-health-core, then pulse-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          # Skip a crate whose version is already up, so a re-run after a half-finished publish works.
+          for crate in pulse-health-core pulse-cli; do
+            if curl -sf -A "pulse-release (github.com/selcux/pulse)" \
+                "https://crates.io/api/v1/crates/$crate/$VERSION" > /dev/null; then
+              echo "$crate $VERSION is already on crates.io, skipping"
+            else
+              cargo publish -p "$crate" --locked
+            fi
+          done
+
+  github-release:
+    name: GitHub Release
+    if: github.event_name == 'push'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"
