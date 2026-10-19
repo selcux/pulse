@@ -2,7 +2,7 @@
 
 ## Prebuilt Binary (no Rust needed)
 
-Every release after 0.14.0 attaches binaries to its [GitHub Release](https://github.com/selcux/pulse/releases/latest):
+Every release from 0.14.0 on attaches binaries to its [GitHub Release](https://github.com/selcux/pulse/releases/latest):
 
 | Platform | Archive |
 |---|---|
