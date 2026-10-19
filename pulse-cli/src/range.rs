@@ -23,12 +23,13 @@ pub struct RangeArgs {
     /// First day to show, YYYY-MM-DD
     #[arg(long, value_name = "DATE", value_parser = parse_iso_date)]
     from: Option<NaiveDate>,
-    /// Last day to show, YYYY-MM-DD (default: today). Needs --from
+    /// Last day to show, YYYY-MM-DD, not after today (default: today). Needs --from
     #[arg(long, value_name = "DATE", value_parser = parse_iso_date, requires = "from")]
     to: Option<NaiveDate>,
 }
 
-/// The same flags on `sync`: `--days` defaults to 2, and the range cannot end after today.
+/// The same flags on `sync`, where `--days` defaults to 2. As on the read commands, the range
+/// cannot end after today.
 #[derive(Debug, Clone, Copy, clap::Args)]
 pub struct SyncRangeArgs {
     /// Sync the last N days, today included
@@ -48,34 +49,33 @@ pub struct SyncRangeArgs {
 impl RangeArgs {
     /// The dates to show. Error messages name the flags; `parse_cli` reports them as clap errors.
     pub fn resolve(self, today: NaiveDate) -> anyhow::Result<DateRange> {
-        resolve(self.days, self.from, self.to, today, true)
+        resolve(self.days, self.from, self.to, today)
     }
 }
 
 impl SyncRangeArgs {
-    /// The dates to sync. Like [`RangeArgs::resolve`], and the range cannot end after `today`.
+    /// The dates to sync. Resolves like [`RangeArgs::resolve`].
     pub fn resolve(self, today: NaiveDate) -> anyhow::Result<DateRange> {
-        resolve(self.days, self.from, self.to, today, false)
+        resolve(self.days, self.from, self.to, today)
     }
 }
 
 /// Shared by both `resolve`s. Without `from` the range is the last `days` dates ending `today` (clap
-/// guarantees `to` is `None` then); with it, `from ..= to`, and `to` defaults to `today`.
+/// guarantees `to` is `None` then); with it, `from ..= to`, and `to` defaults to `today`. A `to`
+/// after `today` is refused.
 fn resolve(
     days: NonZeroU32,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
     today: NaiveDate,
-    allow_future: bool,
 ) -> anyhow::Result<DateRange> {
     let Some(start) = from else {
         return Ok(DateRange::last_days(today, days));
     };
-    if !allow_future
-        && let Some(to) = to
+    if let Some(to) = to
         && to > today
     {
-        anyhow::bail!("--to {to} is after today ({today}); sync cannot fetch future days");
+        anyhow::bail!("--to {to} is after today ({today})");
     }
     let end = to.unwrap_or(today);
     if start > end {
@@ -243,26 +243,34 @@ mod tests {
     }
 
     #[test]
-    fn read_ranges_may_end_after_today() {
-        assert!(
-            read(7, Some("2026-12-01"), Some("2026-12-31"))
-                .resolve(today())
-                .is_ok()
+    fn read_ranges_cannot_end_after_today() {
+        let err = read(7, Some("2026-10-01"), Some("2026-10-18"))
+            .resolve(today())
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--to 2026-10-18 is after today (2026-10-17)"
         );
-        assert!(
-            read(7, Some("2026-10-01"), Some("2026-10-31"))
-                .resolve(today())
-                .is_ok()
+
+        // A month-end date mid-month, the case that silently skewed the vitality baselines.
+        let err = read(7, Some("2026-10-01"), Some("2026-10-31"))
+            .resolve(today())
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--to 2026-10-31 is after today (2026-10-17)"
         );
     }
 
     #[test]
     fn sync_ranges_cannot_end_after_today() {
-        let message = "--to 2026-10-18 is after today (2026-10-17); sync cannot fetch future days";
         let err = sync(1, Some("2026-10-01"), Some("2026-10-18"))
             .resolve(today())
             .unwrap_err();
-        assert_eq!(err.to_string(), message);
+        assert_eq!(
+            err.to_string(),
+            "--to 2026-10-18 is after today (2026-10-17)"
+        );
 
         // The `--to` check runs before the `--from` one.
         let err = sync(1, Some("2026-12-01"), Some("2026-12-31"))
@@ -270,13 +278,24 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "--to 2026-12-31 is after today (2026-10-17); sync cannot fetch future days"
+            "--to 2026-12-31 is after today (2026-10-17)"
         );
+    }
 
-        assert!(
+    #[test]
+    fn to_equal_to_today_is_accepted() {
+        let expected = range("2026-10-01", "2026-10-17");
+        assert_eq!(
+            read(7, Some("2026-10-01"), Some("2026-10-17"))
+                .resolve(today())
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
             sync(1, Some("2026-10-01"), Some("2026-10-17"))
                 .resolve(today())
-                .is_ok()
+                .unwrap(),
+            expected
         );
     }
 

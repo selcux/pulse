@@ -1251,17 +1251,41 @@ mod tests {
     }
 
     #[test]
-    fn read_commands_accept_a_range_after_today() {
+    fn read_commands_reject_a_range_that_ends_after_today() {
+        for command in ["sleep", "vitality"] {
+            let args = [
+                "pulse",
+                command,
+                "--from",
+                "2026-10-01",
+                "--to",
+                "2026-10-31",
+            ];
+            let Err(e) = parse_cli(args, today()) else {
+                panic!("{command} --to after today must be rejected");
+            };
+            assert_eq!(e.kind(), ErrorKind::ValueValidation);
+            let message = e.render().to_string();
+            assert!(
+                message.contains("--to 2026-10-31 is after today (2026-10-17)"),
+                "{message}"
+            );
+            assert!(!message.contains("sync cannot"), "{message}");
+        }
+    }
+
+    #[test]
+    fn read_commands_accept_a_range_ending_today() {
         assert_eq!(
             parse_range(&[
                 "pulse",
                 "sleep",
                 "--from",
-                "2026-12-01",
+                "2026-10-01",
                 "--to",
-                "2026-12-31"
+                "2026-10-17"
             ]),
-            Ok(range("2026-12-01", "2026-12-31"))
+            Ok(range("2026-10-01", "2026-10-17"))
         );
     }
 
@@ -1282,9 +1306,7 @@ mod tests {
         assert_eq!(e.kind(), ErrorKind::ValueValidation);
         let message = e.render().to_string();
         assert!(
-            message.contains(
-                "--to 2026-10-18 is after today (2026-10-17); sync cannot fetch future days"
-            ),
+            message.contains("--to 2026-10-18 is after today (2026-10-17)"),
             "{message}"
         );
         assert!(message.contains("Usage: pulse sync"), "{message}");
