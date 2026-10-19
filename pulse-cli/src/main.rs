@@ -221,7 +221,7 @@ fn main() -> anyhow::Result<()> {
             cmd_wellness(&range.resolve(today)?, output.format(), output.wide())
         }
         Commands::Vitality { range, output } => {
-            cmd_vitality(&range.resolve(today)?, output.format())
+            cmd_vitality(&range.resolve(today)?, today, output.format())
         }
         Commands::Config { action } => cmd_config(action),
     }
@@ -573,11 +573,15 @@ fn format_exercise_set(s: &ExerciseSet) -> String {
     )
 }
 
-fn cmd_vitality(range: &DateRange, format: OutputFormat) -> anyhow::Result<()> {
+fn cmd_vitality(
+    range: &DateRange,
+    today: chrono::NaiveDate,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     let cfg = config::load_config()?;
     let db = Database::open()?;
-    let scores = vitality::calculate_vitality(&db, &cfg, range)?;
-    let pace = vitality::calculate_pace(&db, &cfg, range.end)?;
+    let scores = vitality::calculate_vitality(&db, &cfg, range, today)?;
+    let pace = vitality::calculate_pace(&db, &cfg, range.end, today)?;
 
     let report = VitalityReport {
         pace: pace.as_ref(),
@@ -618,6 +622,9 @@ fn cmd_vitality(range: &DateRange, format: OutputFormat) -> anyhow::Result<()> {
     }
 
     println!("{}", table::render(table::VITALITY_COLUMNS, &scores));
+    if scores.iter().any(|s| !s.complete) {
+        println!("{}", table::UNFINISHED_FOOTNOTE);
+    }
 
     Ok(())
 }

@@ -479,6 +479,7 @@ mod tests {
                 activity_score: 100.0,
                 stress_score: 75.0,
                 fitness_score: Some(64.3),
+                complete: false,
             },
             VitalityScore {
                 date: "2026-01-01".into(),
@@ -488,6 +489,7 @@ mod tests {
                 activity_score: 62.0,
                 stress_score: 75.0,
                 fitness_score: None,
+                complete: true,
             },
         ]
     }
@@ -657,6 +659,7 @@ mod tests {
   "scores": [
     {
       "activity_score": 100.0,
+      "complete": false,
       "date": "2026-01-02",
       "fitness_score": 64.3,
       "recovery_score": 71.25,
@@ -666,6 +669,7 @@ mod tests {
     },
     {
       "activity_score": 62.0,
+      "complete": true,
       "date": "2026-01-01",
       "fitness_score": null,
       "recovery_score": 50.0,
@@ -681,6 +685,7 @@ mod tests {
   "scores": [
     {
       "activity_score": 100.0,
+      "complete": false,
       "date": "2026-01-02",
       "fitness_score": 64.3,
       "recovery_score": 71.25,
@@ -827,13 +832,13 @@ exercise_sets:
   vs_baseline: -3.5
   seven_day_avg: 74.2
   thirty_day_avg: 70.5
-scores[2]{date,total_score,sleep_score,recovery_score,activity_score,stress_score,fitness_score}:
-  2026-01-02,78.4,90.2,71.2,100,75,64.3
-  2026-01-01,70,76.5,50,62,75,null"#;
+scores[2]{date,total_score,sleep_score,recovery_score,activity_score,stress_score,fitness_score,complete}:
+  2026-01-02,78.4,90.2,71.2,100,75,64.3,false
+  2026-01-01,70,76.5,50,62,75,null,true"#;
 
     const VITALITY_NO_PACE_TOON: &str = r#"pace: null
-scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_score,fitness_score}:
-  2026-01-02,78.4,90.2,71.2,100,75,64.3"#;
+scores[1]{date,total_score,sleep_score,recovery_score,activity_score,stress_score,fitness_score,complete}:
+  2026-01-02,78.4,90.2,71.2,100,75,64.3,false"#;
 
     // `"#tag"` ends an `r#"..."#` literal, hence the extra hash.
     const QUOTING_TOON: &str = r##"activity[18]{date,steps,active_minutes,floors,total_kcal,active_kcal,bmr_kcal,distance_meters,source}:
@@ -913,13 +918,13 @@ multiplier trend vs_baseline seven_day_avg thirty_day_avg
 1.05 steady -3.5 74.2 70.5
 
 table.scores
-date total_score sleep_score recovery_score activity_score stress_score fitness_score
-2026-01-02 78.4 90.2 71.2 100.0 75.0 64.3
-2026-01-01 70.0 76.5 50.0 62.0 75.0 null"#;
+date total_score sleep_score recovery_score activity_score stress_score fitness_score complete
+2026-01-02 78.4 90.2 71.2 100.0 75.0 64.3 false
+2026-01-01 70.0 76.5 50.0 62.0 75.0 null true"#;
 
     const VITALITY_NO_PACE_ISON: &str = r#"table.scores
-date total_score sleep_score recovery_score activity_score stress_score fitness_score
-2026-01-02 78.4 90.2 71.2 100.0 75.0 64.3"#;
+date total_score sleep_score recovery_score activity_score stress_score fitness_score complete
+2026-01-02 78.4 90.2 71.2 100.0 75.0 64.3 false"#;
 
     // `"#tag"` ends an `r#"..."#` literal, hence the extra hash.
     const QUOTING_ISON: &str = r##"table.activity

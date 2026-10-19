@@ -3,7 +3,8 @@
 //! [`calculate_vitality`] produces a [`VitalityScore`] for each day that has
 //! sleep data (sleep is the "anchor" metric). [`calculate_pace`] compares the
 //! scores of the 7 days ending at a date with those of the 30 days ending there,
-//! indicating whether recent vitality is above or below that baseline.
+//! indicating whether recent vitality is above or below that baseline. A day that is not over yet
+//! (see [`is_complete`]) has a score but is left out of the pace, the way a day without a score is.
 
 use std::num::NonZeroU32;
 
@@ -36,12 +37,13 @@ const PACE_RECENT_DAYS: NonZeroU32 = NonZeroU32::new(7).unwrap();
 /// label, and the 31-date span of the heart baselines is a separate, pending decision.
 const PACE_BASELINE_DAYS: NonZeroU32 = NonZeroU32::new(30).unwrap();
 
-/// Scored days the recent window needs before there is a pace: 5 of its 7, so up to two nights
-/// without sleep data.
+/// Scored, finished days the recent window needs before there is a pace: 5 of its 7, so up to
+/// two nights without sleep data.
 const PACE_RECENT_MIN_SCORED: usize = 5;
 
-/// Scored days the baseline window needs before there is a pace: 20 of its 30, two-thirds. After a
-/// long gap this keeps pace hidden until the baseline again covers most of a month.
+/// Scored, finished days the baseline window needs before there is a pace: 20 of its 30,
+/// two-thirds. After a long gap this keeps pace hidden until the baseline again covers most of a
+/// month.
 const PACE_BASELINE_MIN_SCORED: usize = 20;
 
 /// The pace's recent window: `DateRange::last_days(end, PACE_RECENT_DAYS)`.
@@ -52,6 +54,14 @@ fn pace_recent_range(end: NaiveDate) -> DateRange {
 /// The pace's baseline window: `DateRange::last_days(end, PACE_BASELINE_DAYS)`.
 fn pace_baseline_range(end: NaiveDate) -> DateRange {
     DateRange::last_days(end, PACE_BASELINE_DAYS)
+}
+
+/// Whether the day at `date` is over, so its activity and stress cover all of it.
+///
+/// A day is complete when it is before `today`. This is the only place that rule lives, so a better
+/// signal can replace it without touching the pace or the output.
+fn is_complete(date: NaiveDate, today: NaiveDate) -> bool {
+    date < today
 }
 
 /// Composite vitality score for a single day.
@@ -68,6 +78,9 @@ pub struct VitalityScore {
     pub activity_score: f64,        // 0-100 (weight: 25% without fitness, 20% with)
     pub stress_score: f64,          // 0-100 (weight: 20% without fitness, 15% with)
     pub fitness_score: Option<f64>, // 0-100 (weight: 20% when present)
+    /// `false` while the day is not over: its activity and stress cover only part of it, and the
+    /// pace leaves the score out. Last field on purpose: TOON and ISON rows are positional.
+    pub complete: bool,
 }
 
 /// Direction of recent vitality relative to the longer-term baseline.
@@ -92,9 +105,10 @@ pub struct PaceInfo {
     pub trend: PaceTrend,
     /// `seven_day_avg - thirty_day_avg`, signed.
     pub vs_baseline: f64,
-    /// Mean score of the scored days among the 7 days ending at the pace's date.
+    /// Mean score of the scored, finished days among the 7 days ending at the pace's date.
     pub seven_day_avg: f64,
-    /// Mean score of the scored days among the 30 days ending at the pace's date, the 7 included.
+    /// Mean score of the scored, finished days among the 30 days ending at the pace's date, the 7
+    /// included.
     pub thirty_day_avg: f64,
 }
 
@@ -103,26 +117,31 @@ pub struct PaceInfo {
 ///
 /// The windows do not depend on the range a caller displays. This function scores the 30 days
 /// itself with [`calculate_vitality`], so a date gets the same score here as in any range that
-/// also ends at `end`. Days without a score (no sleep data) are left out of both means.
-/// `Ok(None)` when fewer than 5 of the 7 days or 20 of the 30 days have a score.
+/// also ends at `end`. Days without a score (no sleep data) and days that are not over yet (see
+/// [`is_complete`] with `today`) are left out of both means and do not count towards the minimums.
+/// The windows still end at `end`, so a pace ending today is computed from the finished days only.
+/// `Ok(None)` when fewer than 5 of the 7 days or 20 of the 30 days have a finished score.
 pub fn calculate_pace(
     db: &Database,
     config: &PulseConfig,
     end: NaiveDate,
+    today: NaiveDate,
 ) -> Result<Option<PaceInfo>> {
-    let scores = calculate_vitality(db, config, &pace_baseline_range(end))?;
+    let scores = calculate_vitality(db, config, &pace_baseline_range(end), today)?;
     Ok(pace_from_scores(&scores, end))
 }
 
-/// Mean `total_score` of the scores dated inside `range`, or `None` when fewer than `min_scored`
-/// of them are. A date that does not parse as `YYYY-MM-DD` does not count.
+/// Mean `total_score` of the finished scores dated inside `range`, or `None` when fewer than
+/// `min_scored` of them are. A score that is not complete or whose date does not parse as
+/// `YYYY-MM-DD` does not count.
 fn mean_score_in(scores: &[VitalityScore], range: &DateRange, min_scored: usize) -> Option<f64> {
     let totals: Vec<f64> = scores
         .iter()
         .filter(|s| {
-            s.date
-                .parse::<NaiveDate>()
-                .is_ok_and(|d| range.start <= d && d <= range.end)
+            s.complete
+                && s.date
+                    .parse::<NaiveDate>()
+                    .is_ok_and(|d| range.start <= d && d <= range.end)
         })
         .map(|s| s.total_score)
         .collect();
@@ -132,7 +151,8 @@ fn mean_score_in(scores: &[VitalityScore], range: &DateRange, min_scored: usize)
     Some(totals.iter().sum::<f64>() / totals.len() as f64)
 }
 
-/// Pace at `end` from `scores`, in any order. Scores dated outside the 30-day window are ignored.
+/// Pace at `end` from `scores`, in any order. Scores dated outside the 30-day window and scores
+/// that are not complete are ignored.
 fn pace_from_scores(scores: &[VitalityScore], end: NaiveDate) -> Option<PaceInfo> {
     let seven_day_avg = mean_score_in(scores, &pace_recent_range(end), PACE_RECENT_MIN_SCORED)?;
     let thirty_day_avg =
@@ -173,10 +193,14 @@ fn pace_from_scores(scores: &[VitalityScore], end: NaiveDate) -> Option<PaceInfo
 ///
 /// The RHR, HRV and VO2 max baselines are averages over the 30 days ending at `range.end`, so a
 /// past range is scored against the baselines of its own time.
+///
+/// `today` is only used to set [`VitalityScore::complete`] on each score; the core never reads the
+/// clock.
 pub fn calculate_vitality(
     db: &Database,
     config: &PulseConfig,
     range: &DateRange,
+    today: NaiveDate,
 ) -> Result<Vec<VitalityScore>> {
     let sleep_data = queries::query_sleep(db, range)?;
     let heart_data = queries::query_heart(db, range)?;
@@ -253,6 +277,10 @@ pub fn calculate_vitality(
             activity_score: activity_component,
             stress_score: stress_component,
             fitness_score: fitness_component,
+            // A date that does not parse cannot be placed before today, so it counts as unfinished.
+            complete: date
+                .parse::<NaiveDate>()
+                .is_ok_and(|d| is_complete(d, today)),
         });
     }
 
@@ -743,7 +771,7 @@ mod tests {
         )
         .unwrap();
 
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
         assert_eq!(scores.len(), 1);
 
         // With auto-baselines rhr=58, hrv=55 and today's values equal to those:
@@ -765,6 +793,11 @@ mod tests {
 
     fn date(s: &str) -> chrono::NaiveDate {
         s.parse().unwrap()
+    }
+
+    /// A `today` after every date the fixed-date tests use, so all their days are complete.
+    fn later() -> chrono::NaiveDate {
+        date("2099-01-01")
     }
 
     /// Insert a heart row for `date` with the given values.
@@ -801,7 +834,7 @@ mod tests {
             end: date("2026-03-05"),
         };
 
-        let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
+        let scores = calculate_vitality(&db, &test_config(), &range, later()).unwrap();
         let dates: Vec<&str> = scores.iter().map(|s| s.date.as_str()).collect();
         assert_eq!(dates, ["2026-03-05", "2026-03-04", "2026-03-03"]);
     }
@@ -827,7 +860,7 @@ mod tests {
         insert_heart_day(&db, "2026-04-01", Some(40), Some(110.0), None);
 
         let range = DateRange::days_ending(day, 0);
-        let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
+        let scores = calculate_vitality(&db, &test_config(), &range, later()).unwrap();
         assert_eq!(scores.len(), 1);
         assert!(
             (scores[0].recovery_score - 100.0).abs() < 0.01,
@@ -845,7 +878,7 @@ mod tests {
         insert_heart_day(&db, "2026-03-31", None, None, None);
 
         let range = DateRange::days_ending(date("2026-03-31"), 0);
-        let scores = calculate_vitality(&db, &test_config(), &range).unwrap();
+        let scores = calculate_vitality(&db, &test_config(), &range, later()).unwrap();
         assert_eq!(scores.len(), 1);
         let actual = scores[0].fitness_score.expect("fitness score present");
         let expected = vo2_population_score(50.0);
@@ -922,7 +955,7 @@ mod tests {
             .unwrap();
         }
 
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
         assert_eq!(scores.len(), 3);
 
         // Own estimate on days that have one; the mean (48.0) on the day without.
@@ -948,7 +981,7 @@ mod tests {
         let today = chrono::Local::now().date_naive().to_string();
         insert_sleep_hours(&db, &today, 8);
 
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
 
         assert_eq!(scores.len(), 1);
         let actual = scores[0].fitness_score.expect("fitness score present");
@@ -1002,7 +1035,7 @@ mod tests {
         )
         .unwrap();
 
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
         // Config baselines used: rhr=50, hrv=70
         // HRV: 56/70*100 = 80, RHR: (2-55/50)*100 = (2-1.1)*100 = 90 -> avg = 85
         assert!(
@@ -1055,7 +1088,7 @@ mod tests {
 
         // Auto-baselines from the 1 day of data: rhr=60, hrv=50 (same as hardcoded fallbacks).
         // At baseline: HRV=100, RHR=100 -> avg=100
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
         assert!(
             (scores[0].recovery_score - 100.0).abs() < 0.01,
             "Expected 100.0, got {}",
@@ -1154,7 +1187,7 @@ mod tests {
         )
         .unwrap();
 
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
         assert_eq!(scores.len(), 1);
 
         let s = &scores[0];
@@ -1203,7 +1236,7 @@ mod tests {
     fn calculate_vitality_no_data_returns_empty() {
         let db = crate::db::Database::open_memory().unwrap();
         let config = test_config();
-        let scores = calculate_vitality(&db, &config, &last_week()).unwrap();
+        let scores = calculate_vitality(&db, &config, &last_week(), last_week().end).unwrap();
         assert!(scores.is_empty());
     }
 
@@ -1224,6 +1257,7 @@ mod tests {
                 activity_score: 0.0,
                 stress_score: 0.0,
                 fitness_score: None,
+                complete: true,
             })
             .collect()
     }
@@ -1266,7 +1300,7 @@ mod tests {
         insert_sleep_before(&db, end, 0..=6, 8);
         insert_sleep_before(&db, end, 7..=29, 4);
 
-        let pace = calculate_pace(&db, &test_config(), end)
+        let pace = calculate_pace(&db, &test_config(), end, later())
             .unwrap()
             .expect("pace present");
         assert_close(pace.seven_day_avg, 65.0);
@@ -1279,6 +1313,7 @@ mod tests {
             &db,
             &test_config(),
             &DateRange::last_days(end, std::num::NonZeroU32::new(7).unwrap()),
+            later(),
         )
         .unwrap();
         assert_eq!(shown.len(), 7);
@@ -1299,7 +1334,7 @@ mod tests {
             insert_sleep_hours(&db, &format!("2026-04-{day:02}"), 4);
         }
 
-        let pace = calculate_pace(&db, &test_config(), end)
+        let pace = calculate_pace(&db, &test_config(), end, later())
             .unwrap()
             .expect("pace present");
         assert_close(pace.seven_day_avg, 65.0);
@@ -1312,7 +1347,7 @@ mod tests {
         let end = date("2026-03-31");
         insert_sleep_before(&db, end, (0..=4).chain(7..=21), 8);
 
-        let pace = calculate_pace(&db, &test_config(), end)
+        let pace = calculate_pace(&db, &test_config(), end, later())
             .unwrap()
             .expect("pace present");
         assert_close(pace.seven_day_avg, 65.0);
@@ -1324,7 +1359,11 @@ mod tests {
         let end = date("2026-03-31");
         insert_sleep_before(&db, end, (0..=3).chain(7..=22), 8);
 
-        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_none());
+        assert!(
+            calculate_pace(&db, &test_config(), end, later())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1333,7 +1372,11 @@ mod tests {
         let end = date("2026-03-31");
         insert_sleep_before(&db, end, (0..=6).chain(7..=19), 8);
 
-        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_some());
+        assert!(
+            calculate_pace(&db, &test_config(), end, later())
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1342,7 +1385,11 @@ mod tests {
         let end = date("2026-03-31");
         insert_sleep_before(&db, end, (0..=6).chain(7..=18), 8);
 
-        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_none());
+        assert!(
+            calculate_pace(&db, &test_config(), end, later())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1350,7 +1397,11 @@ mod tests {
         let db = crate::db::Database::open_memory().unwrap();
         let end = date("2026-03-31");
 
-        assert!(calculate_pace(&db, &test_config(), end).unwrap().is_none());
+        assert!(
+            calculate_pace(&db, &test_config(), end, later())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1409,6 +1460,118 @@ mod tests {
         assert_close(pace.seven_day_avg, 75.0);
         assert_close(pace.thirty_day_avg, 63.5);
         assert_close(pace.vs_baseline, 11.5);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unfinished days (#26)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_day_is_complete_when_it_is_before_today() {
+        let today = date("2026-03-31");
+        assert!(is_complete(date("2026-03-30"), today));
+        assert!(!is_complete(today, today));
+        assert!(!is_complete(date("2026-04-01"), today));
+    }
+
+    #[test]
+    fn vitality_marks_only_the_days_from_today_on_as_unfinished() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let today = date("2026-03-31");
+        insert_sleep_before(&db, today, 0..=2, 8);
+
+        let range = DateRange::last_days(today, std::num::NonZeroU32::new(3).unwrap());
+        let scores = calculate_vitality(&db, &test_config(), &range, today).unwrap();
+
+        let marks: Vec<(&str, bool)> = scores
+            .iter()
+            .map(|s| (s.date.as_str(), s.complete))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("2026-03-31", false),
+                ("2026-03-30", true),
+                ("2026-03-29", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn pace_ending_today_leaves_today_out() {
+        let end = date("2026-03-31");
+        let with_today = crate::db::Database::open_memory().unwrap();
+        insert_sleep_before(&with_today, end, [0], 4); // today so far: 50.0, unlike the rest
+        insert_sleep_before(&with_today, end, 1..=29, 8);
+        let without_today = crate::db::Database::open_memory().unwrap();
+        insert_sleep_before(&without_today, end, 1..=29, 8);
+
+        let pace = calculate_pace(&with_today, &test_config(), end, end)
+            .unwrap()
+            .expect("pace present");
+        let expected = calculate_pace(&without_today, &test_config(), end, end)
+            .unwrap()
+            .expect("pace present");
+
+        assert_close(pace.seven_day_avg, 65.0);
+        assert_close(pace.thirty_day_avg, 65.0);
+        assert_close(pace.seven_day_avg, expected.seven_day_avg);
+        assert_close(pace.thirty_day_avg, expected.thirty_day_avg);
+        assert_close(pace.vs_baseline, expected.vs_baseline);
+    }
+
+    #[test]
+    fn unfinished_today_does_not_count_towards_the_minimums() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        // Today and 4 more of the 7 recent days: 5 scored, 4 of them finished.
+        insert_sleep_before(&db, end, (0..=4).chain(7..=25), 8);
+
+        assert!(
+            calculate_pace(&db, &test_config(), end, later())
+                .unwrap()
+                .is_some(),
+            "with today finished there are 5 of 7"
+        );
+        assert!(
+            calculate_pace(&db, &test_config(), end, end)
+                .unwrap()
+                .is_none(),
+            "with today unfinished there are 4 of 7"
+        );
+    }
+
+    #[test]
+    fn unfinished_today_does_not_count_towards_the_30_day_minimum() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        // Today and 19 earlier days: 20 scored, 19 of them finished.
+        insert_sleep_before(&db, end, (0..=6).chain(7..=19), 8);
+
+        assert!(
+            calculate_pace(&db, &test_config(), end, later())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            calculate_pace(&db, &test_config(), end, end)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pace_ending_before_today_counts_every_day() {
+        let db = crate::db::Database::open_memory().unwrap();
+        let end = date("2026-03-31");
+        insert_sleep_before(&db, end, [0], 4);
+        insert_sleep_before(&db, end, 1..=29, 8);
+
+        let pace = calculate_pace(&db, &test_config(), end, date("2026-04-01"))
+            .unwrap()
+            .expect("pace present");
+        assert_close(pace.seven_day_avg, (6.0 * 65.0 + 50.0) / 7.0);
+        assert_close(pace.thirty_day_avg, (29.0 * 65.0 + 50.0) / 30.0);
     }
 
     // -----------------------------------------------------------------------

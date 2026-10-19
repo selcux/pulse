@@ -27,9 +27,10 @@
 //!
 //! let cfg = config::load_config().unwrap();
 //! let db = Database::open().unwrap();
-//! let week = DateRange::last_days(Local::now().date_naive(), NonZeroU32::new(7).unwrap());
+//! let today = Local::now().date_naive();
+//! let week = DateRange::last_days(today, NonZeroU32::new(7).unwrap());
 //! sync::sync_all(&db, &cfg, &week).unwrap();
-//! let scores = vitality::calculate_vitality(&db, &cfg, &week).unwrap();
+//! let scores = vitality::calculate_vitality(&db, &cfg, &week, today).unwrap();
 //! println!("Today's vitality: {:.1}", scores[0].total_score);
 //! ```
 

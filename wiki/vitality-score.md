@@ -134,9 +134,13 @@ The `vitality` command also computes a **pace** metric. It compares your scores 
 | `vs_baseline` | `seven_day_avg − thirty_day_avg` (signed) |
 | `trend` | `Slowing` (≥ 1.1), `Steady` (0.9–1.1), or `Accelerating` (< 0.9) |
 
-The two windows do not depend on how many days are shown: `pulse vitality` with the default 7 days still scores the 30 days the baseline needs, and `--days 7` and `--days 30` print the same pace. A day without a score (no sleep data) is left out of both averages, not counted as zero. Pace needs a score on at least 5 of the 7 days and 20 of the 30; with fewer there is no pace, and JSON prints `pace: null`. After a longer break, for example weeks without the watch, pace comes back once 20 of the last 30 days have a score again.
+The two windows do not depend on how many days are shown: `pulse vitality` with the default 7 days still scores the 30 days the baseline needs, and `--days 7` and `--days 30` print the same pace. A day without a score (no sleep data) is left out of both averages, not counted as zero. Pace needs a scored, finished day on at least 5 of the 7 days and 20 of the 30; with fewer there is no pace, and JSON prints `pace: null`. After a longer break, for example weeks without the watch, pace comes back once 20 of the last 30 days have a score again.
 
 Before 0.13.0 both averages came from the days shown, so the default `--days 7` always printed `1.00x` Steady.
+
+Today's score is shown but left out of the pace until the day is over. Pulse scores today as soon as last night's sleep is synced, while the steps and stress counted so far cover only part of the day, and that partial score would drag the 7-day average down. A day counts as over once its date is before today. An unfinished day is treated like a day without a score: it is left out of both averages and does not count towards the 5 of 7 and 20 of 30 days. The windows still end on the last day shown, so `7d avg` keeps its label. In the table, today's date ends in `*`, and in JSON, TOON and ISON its `complete` field is `false`.
+
+> **Changed in 0.14.0:** the pace no longer counts an unfinished today. Before, a score for today, computed from a part of the day, was in both averages: in one measured case it moved the 7-day average by 2.2 points, so the pace read a decline most mornings.
 
 > **Terminology note:** "Slowing" means your recent scores are *higher* than your baseline — you are aging more slowly. "Accelerating" means recent scores are lower — a signal to investigate.
 

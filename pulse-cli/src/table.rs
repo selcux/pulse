@@ -324,9 +324,20 @@ pub const WELLNESS: Table<Wellness> = Table {
     default_view: &["date", "weight_kg", "body_fat_percent", "ctl", "atl"],
 };
 
-/// The vitality table. It has no wide view: every column is always shown.
+/// Printed under the vitality table when a shown score is not complete: explains the `*` that
+/// [`VITALITY_COLUMNS`] puts after its date.
+pub const UNFINISHED_FOOTNOTE: &str = "* today, not finished: left out of pace";
+
+/// The vitality table. It has no wide view: every column is always shown. The date of a score that
+/// is not complete ends in `*`; see [`UNFINISHED_FOOTNOTE`].
 pub const VITALITY_COLUMNS: &[Column<VitalityScore>] = &[
-    Column::left("date", "Date", 12, |s| s.date.clone()),
+    Column::left("date", "Date", 12, |s| {
+        if s.complete {
+            s.date.clone()
+        } else {
+            format!("{}*", s.date)
+        }
+    }),
     Column::right("total_score", "Total", 7, |s| {
         format!("{:.1}", s.total_score)
     }),
@@ -876,6 +887,7 @@ mod tests {
                 activity_score: 92.46,
                 stress_score: 64.81,
                 fitness_score: Some(66.12),
+                complete: true,
             },
             VitalityScore {
                 date: "2026-01-01".into(),
@@ -885,6 +897,7 @@ mod tests {
                 activity_score: 100.0,
                 stress_score: 40.04,
                 fitness_score: None,
+                complete: true,
             },
         ]
     }
@@ -1024,6 +1037,21 @@ mod tests {
                 "Date         │   Total │   Sleep │   Recovery │   Activity │   Stress │   Fitness",
                 "─────────────┼─────────┼─────────┼────────────┼────────────┼──────────┼──────────",
                 "2026-01-02   │    78.3 │    81.3 │       70.0 │       92.5 │     64.8 │      66.1",
+                "2026-01-01   │    61.0 │    55.6 │       48.9 │      100.0 │     40.0 │         -",
+            ])
+        );
+    }
+
+    #[test]
+    fn vitality_table_marks_an_unfinished_day() {
+        let mut rows = vitality_rows();
+        rows[0].complete = false;
+        assert_eq!(
+            render(VITALITY_COLUMNS, &rows),
+            lines(&[
+                "Date         │   Total │   Sleep │   Recovery │   Activity │   Stress │   Fitness",
+                "─────────────┼─────────┼─────────┼────────────┼────────────┼──────────┼──────────",
+                "2026-01-02*  │    78.3 │    81.3 │       70.0 │       92.5 │     64.8 │      66.1",
                 "2026-01-01   │    61.0 │    55.6 │       48.9 │      100.0 │     40.0 │         -",
             ])
         );

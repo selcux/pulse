@@ -256,6 +256,7 @@ mod tests {
             &db,
             &test_config(false, None),
             &DateRange::days_ending(day, 7),
+            day,
         )
         .unwrap();
         assert_eq!(scores.len(), 1);

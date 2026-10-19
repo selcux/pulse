@@ -58,6 +58,8 @@ sleep[2]{date,total_seconds,deep_seconds,rem_seconds,light_seconds,awake_seconds
 
 > **Changed in 0.13.0:** the `vitality` pace compares the 7 days ending on the last day shown with the 30 days ending there, whatever range is shown, and needs a score on at least 5 of the 7 days and 20 of the 30. Before, both averages came from the days shown: with the default `--days 7` the multiplier was always `1.00`, and pace was `null` whenever fewer than 7 days had a score. The fields keep their names; their values can differ from earlier releases for the same dates.
 
+> **Changed in 0.14.0:** `vitality` leaves today out of the pace until the day is over, because the steps and stress it has counted so far cover only part of the day. Today's score is still in the table, and its date ends in `*`: `2026-10-19*`. When a `*` is shown, a line below the table reads `* today, not finished: left out of pace`. Each score has a new `complete` field, `false` for a day that is not over and `true` otherwise, last in each row in JSON, TOON and ISON, always present. An explicit `--to` of today behaves as the default does. `7d avg`, `30d avg` and the minimums of 5 of 7 and 20 of 30 days keep their meaning, and today does not count towards the minimums. The pace on most mornings now differs from 0.13.0 for the same data.
+
 TOON and ISON are compact views, not lossless copies of the JSON output.
 
 ISON output follows [spec v1.0](https://www.ison.dev/spec.html) and shows the same compact view as TOON: the same tables, the same rounding, no set row ids. `pulse sleep --format ison`:
